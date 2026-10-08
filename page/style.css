@@ -1,0 +1,973 @@
+/* AgentActa 主页面样式（R25 批 0 从 agent-acta-page.html 的 <style> 原样搬出；类名仍全局，未做 scoped）。
+   加载顺序在 /vendor/element-plus.css 之后 —— 覆盖 Element Plus 默认外观靠的就是这个先后关系。
+   由服务端 /page/ 路由直发（no-store）；改本文件不需要重启服务，浏览器 reload 即可。
+   注意：本文件里没有 url() 引用（搬出时确认过）——将来加背景图等相对路径要按 /page/ 解析，别按页面路径想。 */
+
+:root{
+  --bg:#fff; --card:#fff; --border:#e5e7ee; --border-light:#eef0f4;
+  --text:#1f2329; --regular:#3d4454; --secondary:#646a73; --placeholder:#8f959e;
+  --primary:#3b74e7; --green:#18a058; --green-bg:#e9f7ef; --red:#d03050;
+  --panel:#f7f8fa;
+  --atomcode:#3b74e7; --codebuddy:#18a058; --workbuddy:#7c5cd6;
+  /* 统计图（按天聚合）的三个系列色。分类色按固定顺序取、不循环；这三条在浅色面上跑过
+     CVD / 对比度校验（最差相邻对 ΔE 28.4 protan，正常视觉 28.7）。
+     本页**没有深色主题**（全文件没有 prefers-color-scheme），所以只定义一套 —— 将来要加深色，
+     这三个色连同图表面要一起重算，不是把颜色翻个个儿就行。 */
+  --s-in:#3b74e7; --s-out:#c26a1b; --s-cache:#7c5cd6;
+  --el-color-primary:#3b74e7; --el-color-success:#18a058; --el-color-danger:#d03050;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+/* #app 改成纵向 flex、.layout 用 flex:1 —— 顶栏和「版本不一致」红条都是固定高度，剩下的全给列表区。
+   原来 .layout 写死 calc(100vh - 56px)，那条红条一出现就会被挤出视口（红条本身看不见，白占位）。 */
+html,body,#app{height:100%}
+#app{display:flex;flex-direction:column}
+body{background:var(--bg);color:var(--regular);font:14px/1.6 "PingFang SC",Arial,"Microsoft YaHei",sans-serif;-webkit-font-smoothing:antialiased;overflow:hidden}
+/* Vue 挂载前把整个 #app 藏起来。标记写在 <div id="app" v-cloak> 上，但**没有这条规则它就是个空标记**：
+   四个 vendor 脚本加载完之前，浏览器会把模板当普通 HTML 原样渲染出来——「全部」那行显示 `{{ all.length }}`、
+   侧栏 agent 列表显示 `{{ name }}` / `{{ agents[name] || 0 }}`，整页一片「代码」。F5 刷新时最明显。
+   （历史上一直缺这条，2026-09-15 补上。） */
+[v-cloak]{display:none}
+
+/* 首屏占位：脚本加载完、Vue 挂载之前显示（就是上面那条把 #app 藏起来的时间段）。
+   收场是纯 CSS——#app 一摘掉 v-cloak 就自己躲开，不依赖 mount 之后的任何 JS，
+   mount 抛异常时也照样躲。用 ~ 而不是 +：以后谁在两者之间插了注释/元素也不会静默失效。 */
+#boot{position:fixed;inset:0;background:var(--bg);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px}
+#app:not([v-cloak])~#boot{display:none}
+#boot .boot-logo{width:46px;height:46px;border-radius:13px;background:linear-gradient(135deg,#3b74e7,#18a058);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:23px;font-weight:800;animation:bootPulse 1.3s ease-in-out infinite}
+@keyframes bootPulse{0%,100%{opacity:.35}50%{opacity:1}}
+#boot .boot-txt{font-size:13px;color:var(--placeholder)}
+/* 脚本始终没来（vendor 404 / 解析报错）→ 占位图定格成灰图标，再给一句能顺着查的话 */
+#boot.fail .boot-logo{animation:none;opacity:1;background:#d7dae1}
+#boot.fail .boot-txt{color:var(--red)}
+
+/* ===== 滚动条（全局）=====
+   默认的原生滚动条在 Windows 上是 15px 宽的灰轨道大粗条，跟这套界面不搭。
+   造型照搬 F:\centos\next-admin（src/app/app.css 的「滚动条」段）：细条、圆角、轨道透明、
+   不画两端箭头、**悬停才显形**。页面上的滚动区都吃这一套：.main（列表）、.side（agent 侧栏）、
+   统计对话框的 body、.st-table / .st-mlist、详情里的 pre，以及会滚的 el-overlay。
+
+   **只能用标准属性，别用 ::-webkit-scrollbar-* 去做悬停显隐。** 两条都是本机 Chrome 152 逐像素扫
+   滚动条那几列量出来的（不是查资料得来的）：
+     1) Chromium 的滚动条伪元素只认 background / border / border-radius / 宽高 —— **opacity 写了不生效**：
+        一个从没被鼠标碰过的探针元素，规则里明摆着 opacity:0，滑块照样按 rgba(0,0,0,.2) 画出来；
+        而 getComputedStyle 会老实回报 "0"，所以光看计算样式根本发现不了。
+        （next-admin 那两份都是 opacity 方案，所以在 Chrome 里 = 滑块常显、怎么移都不隐藏。）
+     2) 更麻烦的是：**悬停状态一变，Chromium 不重绘伪元素那条滚动条**——鼠标移开 0.6s 后，
+        滚动条还停在上一次画的样子（同样滚到中间做 A/B，滑块原地不动）。
+        所以哪怕改成 background:transparent ↔ rgba(0,0,0,.2)，也只是把「不隐藏」换成「不出现」。
+   换成标准属性后同样的 A/B 实测才两头都跟得住：悬停时有滑块（rgba(0,0,0,.2) 落在白底上 = 像素 204,204,204，
+   宽 6px、两端圆角），移开同一位置整列变回纯白。所以主路径就是它（Chrome 121+ / Edge / Firefox 都支持）；
+   一旦声明了 scrollbar-color，Chromium 就忽略那套 ::-webkit-scrollbar，两条路不会互相打架。
+   （下一行的 * 特异度是 (0,0,0)，比任何类选择器都低，这条 transition 不会压掉组件自己的过渡。） */
+*{scrollbar-width:thin;scrollbar-color:transparent transparent;transition:scrollbar-color .25s ease}
+*:hover{scrollbar-color:rgba(0,0,0,.2) transparent}
+/* 兜底：不认标准属性的浏览器（Safari、Chrome<121）给一条常显的 6px 细条。
+   这里**故意不做悬停显隐** —— 理由见上面第 2 条，走伪元素那条路跟不住；
+   与其时灵时不灵，不如常显：细、圆角、无箭头，已经比系统默认那条大粗条好看得多。 */
+@supports not (scrollbar-color: red){
+  *::-webkit-scrollbar{width:6px;height:6px}
+  *::-webkit-scrollbar-track{background:transparent}
+  *::-webkit-scrollbar-thumb{background:rgba(0,0,0,.2);border-radius:4px}
+  *::-webkit-scrollbar-button{display:none}
+}
+
+/* ===== 版本不一致红条 =====
+   只在「服务不是我这张页面配套的那版」时出现。刻意做成常驻、不可关闭：这条状态下页面上的新功能
+   （用量统计、cursor 接入…）本来就是坏的，让人关掉提示等于把故障藏起来。 */
+.vm-bar{flex:none;display:flex;align-items:flex-start;gap:10px;padding:10px 20px;background:#fdecef;border-bottom:1px solid #f3c2cc;color:#a3243c;font-size:13px}
+.vm-bar .el-icon{margin-top:2px;flex:none;font-size:16px}
+.vm-txt{min-width:0}
+.vm-fix{margin-top:3px;color:#8a4a58;font-size:12.5px}
+.vm-fix code{background:#fff;border:1px solid #f3c2cc;border-radius:4px;padding:1px 5px;font-family:ui-monospace,Consolas,monospace;font-size:12px;color:#a3243c}
+
+/* ===== 顶栏 ===== */
+.topbar{height:56px;background:var(--card);border-bottom:1px solid var(--border);box-shadow:0 1px 6px rgba(31,35,41,.06);display:flex;align-items:center;padding:0 20px;position:relative;z-index:10}
+.brand{display:flex;align-items:center;gap:10px;font-size:16px;font-weight:700;color:var(--text)}
+.brand .logo{width:26px;height:26px;border-radius:7px;background:linear-gradient(135deg,#3b74e7,#18a058);color:#fff;display:inline-flex;align-items:center;justify-content:center;font-size:14px;font-weight:800}
+.top-right{margin-left:auto;display:flex;align-items:center;gap:10px}
+.live-tag{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--secondary);background:var(--panel);border:1px solid var(--border);border-radius:20px;padding:3px 12px}
+.live-tag .dot{width:8px;height:8px;border-radius:50%;background:#a8abb2}
+.live-tag.on .dot{background:var(--green);animation:pulse 1.6s infinite}
+.live-tag{cursor:pointer;user-select:none;transition:border-color .15s,color .15s}
+.live-tag:hover{border-color:var(--primary);color:var(--primary)}
+.live-tag.paused .dot{background:#e6a23c}
+.live-tag.scan .dot{background:var(--primary);animation:pulse 1.6s infinite}
+.live-tag .caret{font-size:11px;margin-left:-1px}
+.live-tag.idleOn .dot{background:#e6a23c}
+.picked{color:var(--primary);font-weight:600}
+@keyframes pulse{50%{opacity:.35}}
+
+/* ===== 布局 ===== */
+.layout{display:flex;flex:1;min-height:0}
+.side{width:272px;flex:none;background:#fafbfc;border-right:1px solid var(--border);padding:12px 10px;overflow-y:auto}
+.main-outer{flex:1;background:#f6f8f9;padding:14px 16px 0;display:flex;min-width:0}
+.main{flex:1;overflow-y:auto;padding:20px 24px 40px;background:#fff;border:1px solid var(--border);border-bottom:none;border-radius:12px 12px 0 0;min-width:0}
+
+/* ===== 侧栏 ===== */
+.nav-label{font-size:12.5px;color:var(--placeholder);padding:12px 12px 6px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:6px;font-size:14.5px;color:var(--regular);cursor:pointer;user-select:none;margin-bottom:2px;transition:background .15s}
+.nav-item:hover{background:var(--panel)}
+.nav-item.active{background:var(--green-bg);color:#0f7a4d;font-weight:700}
+.nav-item .cnt{margin-left:auto;font-size:12.5px;color:var(--placeholder);font-weight:400;font-variant-numeric:tabular-nums}
+.nav-item .adot{width:10px;height:10px;border-radius:50%;flex:none}
+.agent-label{display:flex;align-items:center}
+/* 「+」「✕」都撑出真正点得中的方块：内边距 5px/4px + 图标 16px/15px ≈ 26px/24px，
+   原来 2px/1px 内边距时热区就只有图标本身那么大。
+   必须显式 content-box：Element Plus 的 .el-icon 是 1em×1em + border-box，
+   不改的话 padding 会从图标身上抠地方，图标被压成 6px——比改之前还小。 */
+.add-btn{margin-left:auto;cursor:pointer;color:var(--secondary);border-radius:6px;padding:5px;font-size:16px;box-sizing:content-box;transition:all .15s}
+.add-btn:hover{color:#fff;background:var(--primary)}
+/* 删除键常显（弱化成 45% 不透明度），悬停整行才提亮——纯 hover 才出现的按钮等于不存在 */
+.del-btn{color:var(--placeholder);cursor:pointer;border-radius:6px;padding:4px;font-size:15px;flex:none;opacity:.45;box-sizing:content-box;transition:all .15s}
+.nav-item:hover .del-btn{opacity:1}
+.del-btn:hover{color:#fff;background:var(--red);opacity:1}
+.form-tip{font-size:12px;color:var(--placeholder);line-height:1.5;margin-top:6px}
+.tried{margin-top:10px;font-size:12px;color:var(--secondary)}
+.tried-t{margin-bottom:2px}
+/* 一行里既有路径（无空格的超长串）又有中文原因：break-all 会把中文也逐字断开、读起来发毛，
+   改成 overflow-wrap:anywhere —— 中文按正常规则换行，只有当长路径真的溢出时才在任意位置断。 */
+.tried-p{font-family:Consolas,Menlo,monospace;color:var(--placeholder);overflow-wrap:anywhere}
+.side-foot{padding:10px 12px 4px;border-top:1px solid var(--border-light);margin-top:10px}
+
+/* ===== 页头 ===== */
+.page-head{display:flex;align-items:flex-end;gap:16px;flex-wrap:wrap;margin-bottom:16px}
+h1{font-size:20px;font-weight:700;color:var(--text);line-height:1.3}
+.statline{color:var(--placeholder);font-size:12.5px;margin-top:2px}
+.filters{margin-left:auto;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.filters .el-input{width:220px}
+.filters .el-select{width:160px}
+.filters .el-select.slim{width:120px}
+/* R22：日期区间选择器比符号档宽，单独定宽（与用量统计弹窗那个 daterange 同一控件） */
+.filters .rng-picker{width:250px}
+
+/* ===== R33 全文搜索的结果条 ===== */
+/* 只在搜索态出现，夹在页头与列表之间。刻意做成一条**常驻可见**的窄条而不是浮层：
+   索引覆盖度（已索引 A/B）是「这次没搜到」与「这条日志不存在」的唯一区分依据，
+   它必须一直看得见，不能靠悬浮才显示。 */
+.search-bar{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:-6px 0 14px;
+  padding:9px 12px;border-radius:8px;font-size:12.5px;color:var(--text);
+  background:#eef3fd;border:1px solid #d3e0fa}
+.search-bar b{font-weight:600}
+/* 覆盖度/窗口外/读不出这几条是「结果的边界说明」，比主句轻一档，避免把「命中 N 条」淹掉 */
+.search-bar .sb-meta{color:var(--placeholder)}
+.search-bar .sb-err{color:#c0392b}
+.search-bar .sb-spacer{flex:1 1 auto}
+
+/* ===== 请求卡片 ===== */
+/* content-visibility:auto：屏外卡片跳过布局与绘制。一屏 200 张卡时，展开一张卡引起的
+   下方重排/重绘、以及长列表滚动，都因此从「整列表」缩到「视口附近的几张」。
+   contain-intrinsic-size 的 auto 让浏览器记住上次真实高度，滚动条不会因估算值跳动。 */
+.card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 20px;margin-bottom:14px;cursor:pointer;box-shadow:0 1px 2px rgba(16,24,40,.04);transition:box-shadow .18s,border-color .18s;content-visibility:auto;contain-intrinsic-size:auto 170px}
+.card:hover{box-shadow:0 4px 16px rgba(16,24,40,.08);border-color:#d8dce4}
+.card.sel{border-color:var(--primary);box-shadow:0 4px 16px rgba(59,116,231,.14)}
+/* R5：失败卡片显著区分——左边框 + 浅红底，列表里扫一眼就能定位，不用逐张展开 */
+.card.failed{border-left:3px solid #e05252;background:linear-gradient(to right,rgba(224,82,82,.05),transparent 30%),var(--card)}
+/* R5：统计行里的「失败 N 条」入口，做成可点的链接样式 */
+.fail-link{color:#e05252;cursor:pointer;user-select:none}
+.fail-link:hover{text-decoration:underline}
+/* R6：会话时间线弹层 */
+.sess-link{cursor:pointer}
+.sess-link:hover{color:var(--primary);text-decoration:underline}
+.sess-sum{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:12.5px;color:var(--secondary);padding:8px 12px;background:var(--panel);border:1px solid var(--border-light);border-radius:8px;margin-bottom:12px}
+.sess-sum b{color:var(--text)}
+.sess-models{color:var(--primary)}
+.sess-list{max-height:62vh;overflow:auto}
+.sess-turn{border:1px solid var(--border-light);border-radius:8px;margin-bottom:8px;background:var(--card)}
+.sess-turn.err{border-left:3px solid #e05252}
+.sess-turn-head{display:flex;align-items:center;gap:10px;padding:8px 12px;cursor:pointer;font-size:12.5px}
+.sess-turn-head:hover{background:var(--panel)}
+.sess-turn-head .sn{color:var(--placeholder);flex:none}
+.sess-turn-head .st-preview{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--regular)}
+.sess-turn-head .sd{color:var(--placeholder);flex:none}
+.sess-turn-head .st-time{color:var(--placeholder);flex:none;font-size:12px}
+.sess-arrow{color:var(--placeholder);flex:none}
+.sess-turn-body{border-top:1px dashed var(--border-light);padding:10px 14px;cursor:default}
+.sess-turn-body pre{white-space:pre-wrap;word-break:break-word;background:var(--panel);border:1px solid var(--border-light);border-radius:8px;padding:8px 12px;max-height:300px;overflow:auto;font-size:12px;font-family:Consolas,Menlo,monospace}
+.sess-dialog .el-dialog__body{padding-top:10px}
+/* R8：时延分析面板 */
+.ana-refresh{color:var(--primary);cursor:pointer;user-select:none;margin-left:6px}
+.ana-refresh:hover{text-decoration:underline}
+.ana-body{flex:1 1 0;min-height:0;overflow:auto}
+.ana-list{margin-top:8px}
+.ana-row{display:flex;align-items:center;gap:10px;padding:7px 10px;border:1px solid var(--border-light);border-radius:8px;margin-bottom:6px;cursor:pointer;font-size:12.5px;background:var(--card)}
+.ana-row:hover{border-color:var(--primary);background:var(--panel)}
+.ana-row .sn{color:var(--placeholder);flex:none}
+.ana-row .ana-dur{flex:none;font-weight:600;color:var(--text);font-family:Consolas,Menlo,monospace;min-width:64px}
+/* I17 非 LLM 时间分解：最慢轮行内叠加「实际」真实工作时间（墙钟 dur 的次级说明），
+   剥掉用户离开/隔夜 idle gap 后的值，比墙钟短不少、用哑色弱化只作对比不作主读。 */
+.ana-row .ana-rdur{display:block;font-size:11px;font-weight:400;color:var(--placeholder);font-family:Consolas,Menlo,monospace}
+.ana-body .sess-sum.ana-sum-actual{margin-top:-6px;border-color:var(--primary)}
+.ana-body .sess-sum.ana-sum-actual b{color:var(--primary)}
+.ana-tabs{display:flex;align-items:center;gap:18px;border-bottom:1px solid var(--border-light);margin-top:10px}
+.ana-row .ana-pct{flex:none;font-weight:600;font-family:Consolas,Menlo,monospace;min-width:64px;color:#fff;text-align:center;border-radius:4px;padding:0 6px}
+.ana-row .st-preview{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--regular)}
+.ana-row .ana-meta{flex:none;color:var(--placeholder);font-size:12px}
+/* I6 工具失败画像。行复用 .ana-row（与最慢轮/工具调用/缓存命中率三档同构），这里只管新增的三件：
+   工具名列定宽（否则长名字把条形挤没）、率徽标、覆盖度那张小表。 */
+.ana-row.tf-row .st-preview{flex:none;width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ana-row.tf-row .tf-track{flex:0 0 120px}
+.ana-row.tf-row .tf-rate{background:var(--panel);color:var(--red);border:1px solid var(--border-light);opacity:1}
+.tf-low{font-style:normal;color:var(--placeholder);font-size:11px;margin-left:6px;border:1px dashed var(--border);
+  border-radius:3px;padding:0 4px}
+.tf-howto{color:var(--placeholder)}
+.tf-cov{margin-top:14px;border-top:1px solid var(--border-light);padding-top:8px;font-size:12px;color:var(--secondary)}
+.tf-cov-h{color:var(--placeholder);margin-bottom:4px}
+.tf-cov-row{display:flex;align-items:center;gap:10px;padding:3px 10px;border-radius:6px}
+.tf-cov-row:nth-child(odd){background:var(--panel)}
+.tf-cov-row .tf-cov-a{flex:none;width:104px;color:var(--text)}
+.tf-cov-row .tf-cov-k{flex:none;width:96px;color:var(--placeholder);font-family:Consolas,Menlo,monospace}
+.tf-cov-row .tf-cov-t{flex:none;width:132px}
+.tf-cov-row .tf-cov-n{flex:1;min-width:0;color:var(--regular)}
+.tf-cov-row .tf-cov-r{flex:none;min-width:150px;text-align:right}
+/* 有信号的来源才该抢眼；另外三档是「这里为什么是空的」，压成灰字，别混进排行里去 */
+.tf-cov-row .tier-signal{color:var(--green)}
+.tf-cov-row .tier-noDetail,.tf-cov-row .tier-noFlag,.tf-cov-row .tier-unknown{color:var(--placeholder)}
+/* I13 超时 / 软失败：与上面那三档正交的第二份能力（claude 系有、别家源里没有）。
+   超时算失败，标红；软失败是「判定为正常」的那一档，不标红，别让它看着像故障。 */
+.tf-low.tf-to{color:var(--red);border-color:var(--red)}
+.tf-low.tf-soft{color:var(--placeholder)}
+.tf-to-n{color:var(--red)}
+.tf-soft-hint{font-style:normal;color:var(--placeholder);font-size:11px;margin-left:2px}
+.tf-cov-row .tf-cov-ts{flex:none;width:150px;font-size:11px}
+.tf-cov-row .ts-yes{color:var(--green)}
+.tf-cov-row .ts-no{color:var(--placeholder)}
+/* I15 工作指纹（git 分支 / 权限模式 / 产品版本）。行复用 .ana-row，这里只管新增的四件：
+   键名列定宽（分支名长了会把条形挤没）、token 绝对数、占比、失败轮数标红。 */
+.ana-row.wf-row{cursor:default}
+.ana-row.wf-row .wf-key{flex:none;width:150px;font-family:Consolas,Menlo,monospace;color:var(--text)}
+.ana-row.wf-row .st-mtrack{flex:0 0 160px}
+.ana-row.wf-row .wf-num{flex:none;min-width:88px;text-align:right;font-family:Consolas,Menlo,monospace;color:var(--text)}
+.ana-row.wf-row .wf-share{flex:none;width:52px;text-align:right;color:var(--secondary)}
+.ana-row.wf-row .wf-cnt{flex:none;width:92px;text-align:right;color:var(--placeholder)}
+.ana-row.wf-row .wf-err{color:var(--red)}
+.ana-row.wf-row .wf-dur{flex:none;min-width:72px;text-align:right;font-family:Consolas,Menlo,monospace;color:var(--regular)}
+.ana-row.wf-row.wf-noval .wf-key{color:var(--placeholder);font-family:inherit}
+.ana-row.wf-row.wf-noval{opacity:.75;border-style:dashed}
+.wf-note{color:var(--placeholder);font-size:12px;margin:4px 0 8px}
+.card-top{display:flex;align-items:center;gap:12px}
+.avatar{width:36px;height:36px;border-radius:9px;flex:none;display:inline-flex;align-items:center;justify-content:center;font-size:15px;font-weight:700;color:#fff}
+.avatar-img{width:36px;height:36px;border-radius:9px;flex:none;background:#fff;border:1px solid var(--border-light);padding:3px;object-fit:contain}
+.adot-img{width:16px;height:16px;flex:none;object-fit:contain}
+.adot-img.dim{opacity:.45}   /* R16：仅图标的 agent，图标淡显 */
+.icon-only-tag{flex:none;font-size:10px;line-height:1;color:var(--placeholder);border:1px solid var(--border-light);border-radius:8px;padding:2px 6px;cursor:help}
+.avatar.atomcode{background:var(--atomcode)}
+.avatar.codebuddy{background:var(--codebuddy)}
+.avatar.workbuddy{background:var(--workbuddy)}
+.title-block{min-width:0}
+.title-line{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.title-line b{font-size:15px;color:var(--text);font-weight:600}
+.mini-tag{font-size:11px;color:var(--secondary);background:#f2f3f5;border-radius:4px;padding:0 6px;height:18px;line-height:18px;font-weight:500}
+.sub-line{font-size:12.5px;color:var(--placeholder);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:640px}
+/* R33 命中片段：比预览亮一档（它是「为什么这条算命中」的答案，预览只是背景），命中词用 mark 标出来。
+   单行截断与 .sub-line 同款，卡片高度不会因为一段长片段而跳。 */
+.snip-line{font-size:12.5px;color:var(--secondary);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:640px}
+.snip-line mark{background:#fff3bf;color:var(--text);font-weight:600;border-radius:2px;padding:0 1px}
+.tags-right{margin-left:auto;display:flex;gap:8px;flex:none;align-items:center}
+
+/* 状态标签（XAPI 浅色风） */
+.tag{font-size:12px;font-weight:600;border-radius:20px;padding:2px 10px;line-height:18px;white-space:nowrap}
+.tag-ok{color:#16a34a;background:#e9f9ef}
+.tag-err{color:#dc2626;background:#fdecec}
+.tag-plain{color:var(--secondary);background:#f2f3f5;font-weight:500}
+/* I17 非 LLM 时间分解：卡片上「实际」真实工作时间徽章，比墙钟主 tag 更哑，只作对比不作主读 */
+.tag-rdur{color:var(--placeholder);background:transparent;border:1px dashed var(--border-light);font-weight:400}
+/* I16/D2：时间未知的轮（atomcode 那批 .jsonl 0 字节 / turn_id 缺失的轮）—— 哑色虚线标签，
+   与「实际」徽章同一档视觉，别用错误色：它不是故障，是源里没有这个信息。 */
+.tag-unknown{color:var(--placeholder);background:transparent;border:1px dashed var(--border-light);font-weight:400;font-size:11.5px;padding:0 4px;border-radius:3px}
+
+/* I9 两轮 diff：卡片顶行的「对比」按钮（未选中 = 常规态，选中 = 高亮描边） */
+.cmp-pick{font-size:12px;font-weight:600;cursor:pointer;border-radius:20px;padding:2px 10px;line-height:18px;white-space:nowrap;
+  color:var(--primary);background:#edf3ff;border:1px solid transparent;user-select:none}
+.cmp-pick:hover{background:#dce8ff}
+.cmp-pick.on{color:#fff;background:var(--primary);border-color:var(--primary)}
+
+/* 指标组 */
+.metrics{display:flex;gap:14px;margin-top:14px;flex-wrap:wrap}
+.m-group{flex:1;min-width:200px;background:var(--panel);border:1px solid var(--border-light);border-radius:8px;padding:10px 16px 12px}
+.m-label{font-size:12px;color:var(--placeholder);font-weight:500;display:flex;align-items:center;gap:4px;margin-bottom:5px}
+.m-vals{display:flex;align-items:center;gap:26px;flex-wrap:wrap}
+.m-val{display:inline-flex;align-items:center;gap:6px;font-size:15px;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums}
+.m-val .el-icon{color:var(--placeholder);font-size:15px}
+.m-val.hi{color:var(--primary)}
+.m-val.hi .el-icon{color:var(--primary)}
+.m-val small{font-size:11px;color:var(--placeholder);font-weight:400}
+/* Token 悬浮明细 */
+.tok-q{font-size:13px;color:var(--placeholder);cursor:help;display:inline-flex;align-items:center}
+.tok-q:hover{color:var(--primary)}
+.tok-tip{min-width:150px;font-size:12px;line-height:1.9}
+.tok-tip .tr{display:flex;justify-content:space-between;gap:24px}
+.tok-tip .tr span:last-child{font-variant-numeric:tabular-nums;font-weight:600}
+/* 工具悬浮层里的名字可能很长（mcp__gitnexus__impact），封顶 + 省略号，别把弹层撑成一行屏宽 */
+.tok-tip .tr .tn{max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tok-tip .sep{height:1px;background:rgba(255,255,255,.22);margin:4px 0}
+/* 侧栏开关 / 缺失标记 */
+/* flex:1;min-width:0 是省略号生效的前提：不写的话长名字会把开关和删除键挤出侧栏 */
+.agent-name{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.nav-item .sw{margin-left:auto;flex:none;display:inline-flex}
+.nav-item .cnt+.sw{margin-left:8px}
+/* Trae 解密按钮：Key icon，有 busy 态 */
+.nav-item .dec-btn{color:var(--secondary);cursor:pointer;border-radius:6px;padding:4px;font-size:15px;flex:none;margin-left:6px;transition:all .15s}
+.nav-item:hover .dec-btn{opacity:1}
+.nav-item .dec-btn:hover:not(.busy){color:#fff;background:var(--primary)}
+.nav-item .dec-btn.busy{color:var(--warning);animation:pulse 1.5s ease-in-out infinite}
+@keyframes pulse {0%,100%{opacity:.7}50%{opacity:1}}
+/* Cursor token 采集 hook 按钮：未注入=灰、已注入=高亮（on）、操作中=转圈（busy）。
+   与 Trae 的 dec-btn 同形不同色，一眼能分出「哪个是解密、哪个是采 token」 */
+.nav-item .hook-btn{color:var(--placeholder);cursor:pointer;border-radius:6px;padding:4px;font-size:15px;flex:none;margin-left:6px;opacity:.55;transition:all .15s}
+.nav-item:hover .hook-btn{opacity:1}
+.nav-item .hook-btn:hover:not(.busy){color:#fff;background:var(--primary)}
+.nav-item .hook-btn.on{color:var(--green);opacity:1}
+.nav-item .hook-btn.busy{color:var(--red);animation:pulse 1.5s ease-in-out infinite}
+.mini-warn{font-size:12.5px;color:#c26a1b;flex:none}
+/* trace span 树 */
+.span-list{border:1px solid var(--border-light);border-radius:8px;overflow:hidden}
+.span-row{display:flex;align-items:center;gap:10px;padding:5px 14px;font-size:12.5px;background:var(--panel);font-variant-numeric:tabular-nums}
+.span-row+.span-row{border-top:1px solid var(--border-light)}
+.span-row .sn{color:var(--regular);font-family:Consolas,Menlo,monospace;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.span-row .st{color:var(--placeholder);font-size:11px;flex:none}
+.span-row .sd{margin-left:auto;color:var(--secondary);flex:none}
+.span-row .serr{color:var(--red);font-size:11px;flex:none}
+.more-btn{font-size:12px;color:var(--primary);cursor:pointer;user-select:none;display:inline-block;margin-top:4px}
+.more-btn:hover{text-decoration:underline}
+/* 「展开全部 N 条 / 收起」：长列表的收放。整行做成可点区域（块级 + 内边距），
+   不然一行小字的热区只有文字那么大，鼠标不好点。 */
+.sec-toggle{display:block;text-align:center;margin:6px 0 2px;padding:7px 0;border:1px dashed var(--border);border-radius:8px;background:var(--card)}
+.sec-toggle:hover{background:var(--panel);border-color:var(--primary);text-decoration:none}
+/* 详情底部的「收起」。position:sticky 让它在详情很长时贴在滚动区底部、随时可点。
+   背景用渐变而不是实色：吸底时会盖在正文上方，实色会切出一条生硬的边，
+   渐变让文字在按钮上方淡出。上沿不画边框（那会跟着按钮一起浮起来，看着像断线）。 */
+.detail-foot{position:sticky;bottom:0;z-index:2;display:flex;justify-content:flex-end;margin-top:8px;padding:16px 0 2px;
+  background:linear-gradient(to bottom,rgba(255,255,255,0),var(--card) 42%)}
+/* R21 回到顶部悬浮按钮。fixed 右下角，滚动超过一屏才出现（v-show，初始隐藏）；
+   展开详情（expandedId 非空）时 .shift 把按钮抬到吸底「收起」（.detail-foot）上方，不遮挡；
+   窄窗口整体收小并往角落贴。 */
+.back-top{position:fixed;right:24px;bottom:24px;z-index:30;width:40px;height:40px;padding:0;border-radius:50%;
+  border:1px solid var(--border);background:var(--card);color:var(--secondary);cursor:pointer;
+  display:flex;align-items:center;justify-content:center;font-size:16px;
+  box-shadow:0 4px 14px rgba(16,24,40,.14);transition:color .18s,border-color .18s,transform .15s,bottom .2s}
+.back-top:hover{color:var(--primary);border-color:var(--primary);transform:translateY(-2px)}
+.back-top.shift{bottom:104px}
+@media (max-width:768px){.back-top{right:14px;bottom:20px;width:36px;height:36px;font-size:15px}.back-top.shift{bottom:100px}}
+.ctx-track{display:inline-block;width:64px;height:5px;border-radius:3px;background:#e3e6ec;overflow:hidden}
+.ctx-track i{display:block;height:100%;background:var(--primary);border-radius:2px}
+
+/* 卡片底部 */
+.card-foot{display:flex;align-items:center;margin-top:12px;font-size:12px;color:var(--placeholder)}
+.card-foot .r{margin-left:auto;color:var(--placeholder);font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:55%}
+
+/* 展开详情 */
+.detail{margin-top:14px;border-top:1px dashed var(--border);padding-top:12px;cursor:default}
+.detail h4{font-size:12px;color:var(--secondary);font-weight:600;margin:12px 0 6px}
+.detail h4:first-child{margin-top:0}
+.detail pre{white-space:pre-wrap;word-break:break-word;background:var(--panel);border:1px solid var(--border-light);border-radius:8px;padding:10px 14px;max-height:360px;overflow:auto;font-size:12.5px;color:var(--regular);font-family:Consolas,Menlo,monospace}
+/* R3：详情渲染配套样式 */
+h4 .copy-btn,h4 .tool-copy{display:inline-block;margin-left:8px;padding:1px 8px;font-size:11px;font-weight:400;color:var(--primary);border:1px solid var(--border-light);border-radius:6px;cursor:pointer;vertical-align:middle;user-select:none}
+h4 .copy-btn:hover{background:var(--panel);border-color:var(--primary)}
+.tool-copy{margin-left:auto;font-size:11px;color:var(--primary);cursor:pointer;user-select:none}
+.tool-copy:hover{text-decoration:underline}
+.tool-sec-h{font-size:11px;color:var(--secondary);cursor:pointer;user-select:none;margin:4px 0 2px}
+.tool-sec-h:hover{color:var(--primary)}
+.md-body{background:var(--panel);border:1px solid var(--border-light);border-radius:8px;padding:10px 14px;max-height:360px;overflow:auto;font-size:12.5px;color:var(--regular);line-height:1.6}
+.md-body p{margin:4px 0}
+.md-body .md-h{margin:8px 0 4px;color:var(--text)}
+.md-body .md-ul{margin:4px 0;padding-left:20px}
+.md-body .md-q{margin:4px 0;padding:2px 10px;border-left:3px solid var(--border);color:var(--secondary)}
+.md-body .md-hr{border:none;border-top:1px dashed var(--border-light);margin:8px 0}
+.md-body .md-ic,.md-body code{font-family:Consolas,Menlo,monospace;font-size:12px;background:rgba(0,0,0,.05);border-radius:4px;padding:1px 4px}
+.md-body .md-code{display:block;white-space:pre;word-break:normal;background:rgba(0,0,0,.04);border:1px solid var(--border-light);border-radius:6px;padding:8px 10px;margin:6px 0;overflow:auto;max-height:420px}
+.md-body .hl-lang{display:block;font-size:10px;color:var(--placeholder);margin-bottom:2px}
+.md-body .hl-kw{color:#a626a4}
+.md-body .hl-str{color:#50a14f}
+.md-body .hl-com{color:#9aa0a6;font-style:italic}
+.md-body .hl-num{color:#c18401}
+.tool-item{border:1px solid var(--border-light);border-radius:8px;background:var(--panel);margin:8px 0;padding:10px 14px}
+.tool-head{display:flex;align-items:center;gap:8px;font-size:12.5px;font-weight:600;color:var(--text)}
+.tool-head .tname{color:var(--primary);font-family:Consolas,Menlo,monospace}
+.tool-head .terr{color:var(--red);font-weight:400;font-size:12px}
+.tool-head .tdur{margin-left:auto;color:var(--secondary);font-weight:400;font-size:12px;font-variant-numeric:tabular-nums}
+.tool-item pre{max-height:150px;margin-top:6px}
+.call-list{border:1px solid var(--border-light);border-radius:8px;overflow:hidden}
+/* 每行外面多包一层 .call-item：.call-row 是 flex 单行，展开的正文塞不进去，只能做成它的兄弟节点。
+   行与行之间的分隔线因此改挂在 .call-item 上（原来是 .call-row + .call-row） */
+.call-item{background:var(--panel)}
+.call-item+.call-item{border-top:1px solid var(--border-light)}
+.call-item .more-btn{margin:0 14px 8px}
+.call-row{display:flex;align-items:center;gap:14px;padding:7px 14px;font-size:12.5px;background:var(--panel)}
+/* 「本次输出」折叠头：左右内边距与上面那行明细对齐（.call-row 的 14px） */
+.call-out-h{padding:2px 14px 4px}
+/* 逐次正文的高度上限（220px）压得比 .detail pre 的 360px 低：一张表里可能连着十几条，
+   每条都占满一屏的话这表就翻不动了 */
+.call-list .call-out{max-height:220px;margin:0 14px 8px}
+/* 序号列 46px（原来是 32px）：前面多了一个「这次调用有正文」的小圆点，
+   序号还要排到 #139 这种三位数，32px 装不下 */
+.call-row .ci{color:var(--placeholder);font-variant-numeric:tabular-nums;flex:none;width:46px}
+/* 有正文的行才点得开，扫一眼就知道哪几行有内容 —— 没有圆点的那些多半是「只发起了工具调用」 */
+.call-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--primary);margin-right:6px;vertical-align:middle}
+.call-row .cm{color:var(--primary);font-family:Consolas,Menlo,monospace;font-weight:600;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* 这次调用发起了哪些工具。名字可能很长（mcp__gitnexus__impact），给个上限 + 省略号，完整列表在 title 里 */
+.call-row .call-tools{flex:none;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-size:11.5px;font-family:Consolas,Menlo,monospace;color:var(--secondary);
+  background:#f2f3f5;border-radius:4px;padding:0 6px;height:18px;line-height:18px}
+.call-row .cd{margin-left:auto;color:var(--secondary);font-variant-numeric:tabular-nums;flex:none}
+.call-row .ct{color:var(--text);font-variant-numeric:tabular-nums;flex:none}
+.call-row .cerr{color:var(--red);font-size:12px;flex:none}
+/* 「这轮为什么没有逐次明细」的说明行（datalog 默认关 / 该轮没落盘），弱化到不抢眼但能看清 */
+.calls-note{font-size:12px;color:var(--secondary);padding:4px 0 2px}
+/* 详情的「其他事件」（zcode 的非文本 part：状态事件 / 推理长度锚点 / 未知类型 JSON） */
+.other-item{display:flex;gap:10px;align-items:baseline;font-size:12px;padding:3px 0;border-bottom:1px dashed var(--border-light)}
+.other-item .ot{color:var(--regular);font-weight:600;flex:none}
+.other-item .od{color:var(--placeholder);flex:none}
+.other-item .other-json{margin:2px 0 4px;font-size:11.5px;white-space:pre-wrap;word-break:break-all;color:var(--secondary)}
+
+#loadmore{width:100%}
+.empty{padding:56px;text-align:center;color:var(--placeholder);font-size:13px;background:var(--card);border:1px solid var(--border);border-radius:12px}
+
+/* 首份快照在途时的骨架屏：外框/内边距/分段高度都照抄 .card（197px：padding32 + 顶行46 + 指标72+14 + 脚12+14），
+   整块高度对齐，数据到达时列表不会「跳」一下。只在这段时间显示——之后由空态文案或真卡片接手。 */
+.sk-card{background:var(--card);border:1px solid var(--border);border-radius:10px;padding:16px 20px;margin-bottom:14px}
+.sk-top{display:flex;align-items:center;gap:12px;height:46px}
+.sk-av{width:36px;height:36px;border-radius:9px;flex:none}
+.sk-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:10px}
+.sk-line{height:12px;border-radius:6px}
+.sk-line.l1{width:28%}
+.sk-line.l2{width:60%}
+.sk-line.l3{width:34%}
+.sk-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-top:14px}
+.sk-box{height:72px;border-radius:8px}
+.sk-foot{margin-top:14px}
+.sk-av,.sk-line,.sk-box{background:linear-gradient(90deg,var(--border-light),var(--panel),var(--border-light));background-size:400% 100%;animation:skShimmer 1.4s ease infinite}
+@keyframes skShimmer{from{background-position:100% 0}to{background-position:0 0}}
+/* 系统设了「减少动态效果」就只留静态灰块，别闪 */
+@media (prefers-reduced-motion:reduce){.sk-av,.sk-line,.sk-box{animation:none}}
+
+/* 上下文窗口表：一行 = 模型名 + 窗口容量；停用/未填的走灰 */
+.ctxw-cnt{color:#c26a1b !important;font-weight:600}
+.ctxw-t{font-size:12.5px;font-weight:600;color:var(--secondary);margin-bottom:6px}
+.ctxw-row{display:flex;gap:8px;align-items:center;margin-bottom:6px}
+.ctxw-row.off{opacity:.5}
+.ctxw-name{flex:1;min-width:0}
+.ctxw-val{width:120px;flex:none}
+.ctxw-src{font-size:11.5px;color:var(--placeholder);width:72px;flex:none}
+.ctxw-chips{display:flex;flex-wrap:wrap;gap:6px}
+.ctxw-chip{font-size:12px;padding:2px 9px;border:1px solid var(--border-light);border-radius:12px;background:var(--panel);color:var(--text);cursor:pointer;transition:all .15s}
+.ctxw-chip:hover{border-color:var(--primary);color:var(--primary)}
+.ctxw-chip small{color:var(--placeholder);font-size:11px}
+
+/* 环境诊断：一个 agent 一行，左边状态、右边路径与原因 */
+.diag-hint{font-size:12.5px;color:var(--secondary);line-height:1.75;margin-bottom:12px}
+.diag-row{display:flex;gap:10px;align-items:flex-start;padding:9px 12px;border:1px solid var(--border-light);border-radius:8px;background:var(--panel);margin-bottom:8px}
+.diag-row .dn{font-weight:600;font-size:13px;color:var(--text);width:76px;flex:none}
+.diag-row .ds{font-size:11.5px;padding:1px 8px;border-radius:10px;background:var(--border-light);color:var(--secondary);flex:none;white-space:nowrap}
+.diag-row .ds.ok{color:var(--green);background:var(--green-bg)}
+.diag-row .ds.warn{color:#c26a1b;background:#fdf3e7}
+.diag-row .ds.off{color:var(--placeholder)}
+.diag-row .db{min-width:0;flex:1}
+.diag-row .dnote{font-size:12.5px;color:var(--regular);line-height:1.7;word-break:break-all}
+.diag-row .dpath{font-family:Consolas,Menlo,monospace;font-size:11.5px;color:var(--placeholder);line-height:1.7;word-break:break-all}
+.diag-row .dhint{font-size:11.5px;color:var(--secondary);line-height:1.7;word-break:break-all}
+
+/* ===== 用量统计（C2）：按天 token / 耗时聚合 ===== */
+/* 内容比视口高时底部按钮会点不到，所以对话框是一列 flex、有总高度上限。但 body 本身**不滚**：
+   固定区（说明/卡片/图/tab）不缩，底部明细区（.st-pane）吃掉剩余空间、只有它内部的表格/列表滚 ——
+   以前 body 滚动条 + 表格滚动条 + 模型列表滚动条三层嵌套，滚轮悬在表格上会被内层截走，
+   而且「按模型」整段沉在首屏外。overflow-y:auto 只留作超矮窗口的兜底（.st-pane 有 min-height）。 */
+/* height（不是 max-height）：内容现在很紧凑，只设上限的话对话框会按内容收缩，明细区吃不到剩余空间 */
+.st-dialog{display:flex;flex-direction:column;height:94vh;margin-top:3vh}
+.st-dialog .el-dialog__body{flex:1;min-height:0;overflow-y:auto;padding-right:2px}
+.st-body{display:flex;flex-direction:column;height:100%}
+.st-body>*{flex:none}
+/* 明细区：tab 切换「按天 / 按模型」，两屏共用一个滚动位 —— 两块同时摆出来的话每块只剩百来像素，都不够看 */
+.st-tabs{display:flex;align-items:center;gap:18px;border-bottom:1px solid var(--border-light);margin-top:12px}
+.st-tab{padding:6px 2px;font-size:13px;color:var(--secondary);cursor:pointer;user-select:none;border-bottom:2px solid transparent;margin-bottom:-1px}
+.st-tab:hover{color:var(--text)}
+.st-tab.on{color:var(--text);font-weight:600;border-bottom-color:var(--primary)}
+.st-pane{flex:1 1 0;min-height:140px;display:flex;flex-direction:column}
+.st-pane>.st-table,.st-pane>.st-mlist{flex:1 1 0;min-height:0}
+.st-pane .st-note{margin:8px 0 0}
+/* 长说明收进 ⓘ 悬停浮层后的触发点（耗时口径、模型合并规则 —— 看一次就够的东西不占正文行数） */
+.st-info{display:inline-flex;align-items:center;justify-content:center;width:15px;height:15px;border-radius:50%;border:1px solid var(--placeholder);color:var(--secondary);font-size:11px;cursor:help;margin-left:3px;vertical-align:1px}
+.st-note{font-size:12.5px;color:var(--secondary);line-height:1.8;margin-bottom:12px}
+.st-note b{color:var(--text)}
+/* 顶部四格：输入 / 输出 / 缓存 / 合计。数字与色块都来自同一个系列色，文字本身仍用墨色（不拿系列色写字） */
+.st-tiles{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:12px}
+.st-tile{border:1px solid var(--border-light);border-radius:8px;background:var(--panel);padding:9px 12px;min-width:0}
+.st-tile .tl{font-size:12px;color:var(--secondary);display:flex;align-items:center;gap:6px}
+.st-tile .tv{font-size:19px;font-weight:700;color:var(--text);margin-top:3px;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st-tile .ts{font-size:11.5px;color:var(--placeholder);margin-top:1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st-chip{width:9px;height:9px;border-radius:2px;flex:none;display:inline-block}
+/* 概况 + 切换钮**恒定一行**：宁可把概况收成省略号，也不让它被挤下去 ——
+   行数一变，下面整块（图表/图例/表格）跟着跳一行，那就是用户报的「闪烁」。 */
+.st-line{display:flex;align-items:center;gap:12px;font-size:12.5px;color:var(--secondary);margin-bottom:6px}
+.st-line .st-meta{flex:1 1 auto;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.st-line .el-radio-group{flex:none}
+/* 悬停读数**自己一行、且恒定一行**。以前它跟概况、切换钮挤在同一条 flex-wrap 行里，
+   那条行只剩 305px，而读数按天要 289~445px —— 窄的那几天正好塞得下（1 行 = 24px），
+   宽的那几天塞不下（2 行 = 56px），鼠标划过柱子就在两档之间反复跳，图表跟着上下抖 32px。
+   现在高矮与内容无关（nowrap + 固定 height），有数据没数据都不动。
+   截断只是极端数字（十亿级 token）下的兜底，title 里仍是全文。 */
+.st-read{height:24px;line-height:24px;font-size:12.5px;color:var(--regular);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:10px}
+/* 图：柱底对齐基线，段与段之间留 2px 底色缝隙（分类色相邻时靠这个缝隙才分得开，不是装饰）。
+   图上**没有**滚轮缩放/拖动平移：区间一被随手滚掉，底下卡片/明细/模型的数字就全跟着跳 ——
+   区间只能由上方日期选择器改，图表永远画的就是所选区间 */
+.st-chart{display:flex;align-items:flex-end;gap:1px;height:132px;padding-top:8px;border-bottom:1px solid var(--border);position:relative}
+/* 柱子**不铺满**：flex-grow=0 + 48px 基准，所以「今天」只有一根时它就是 48px 宽的一根，
+   而不是拉成一整条 811px 的色块（那看着不像图表、像背景）。柱子多到装不下时 shrink 接管，自动回到等分。 */
+.st-bar{flex:0 1 48px;min-width:0;height:100%;display:flex;flex-direction:column;justify-content:flex-end;cursor:default}
+.st-bar.on{background:#f2f6ff}
+.st-seg{width:100%;flex:none;border-radius:0}
+/* 有值的段至少留 3px：含缓存那一档里「输入/输出」只有合计的 2~3%，不给下限就整段看不见了 */
+.st-seg.hit{min-height:3px}
+.st-seg.sep{border-top:2px solid var(--card)}
+.st-seg.top{border-radius:4px 4px 0 0}
+/* 标签行与柱子行**同一套 flex 规则**（同样的 gap 与 48px 基准），才会逐格对齐。
+   标签**不能** overflow:hidden：抽稀后相邻标签隔着 20 多格，放开也不会撞，而裁掉就会变成「09/1」这种残字。 */
+.st-x{display:flex;gap:1px;margin-top:5px;font-size:11px;color:var(--placeholder)}
+.st-x span{flex:0 1 48px;min-width:0;text-align:center;white-space:nowrap}
+.st-legend{display:flex;gap:14px;align-items:center;font-size:12px;color:var(--secondary);margin:10px 0 4px}
+.st-legend .li{display:flex;align-items:center;gap:5px}
+.st-table{overflow-y:auto;border:1px solid var(--border-light);border-radius:8px;margin-top:8px}
+.st-table table{width:100%;border-collapse:collapse;font-size:12.5px;font-variant-numeric:tabular-nums}
+.st-table th{position:sticky;top:0;background:var(--panel);color:var(--secondary);font-weight:500;text-align:right;padding:7px 10px;border-bottom:1px solid var(--border-light);white-space:nowrap}
+.st-table th:first-child,.st-table td:first-child{text-align:left}
+.st-table td{padding:6px 10px;text-align:right;border-bottom:1px solid var(--border-light);color:var(--regular);white-space:nowrap}
+.st-table tr:last-child td{border-bottom:none}
+.st-table tr.zero td{color:var(--placeholder)}
+.st-warn{color:#c26a1b;cursor:help}
+
+/* 按模型：每行一根**横向**堆叠条，长度 = 该模型 token 占合计的比例（绝对占比，不是按最大值归一）——
+   这样「deepseek 一家占七成」这种事实直接看得出来。分段配色与上方按天图完全一致。 */
+.st-mlist{overflow-y:auto;border:1px solid var(--border-light);border-radius:8px;margin-top:6px}
+.st-mrow{display:flex;align-items:center;gap:10px;padding:5px 10px;font-size:12.5px;font-variant-numeric:tabular-nums}
+.st-mrow:nth-child(odd){background:var(--panel)}
+.st-mrow.none{color:var(--placeholder)}
+.st-mname{width:210px;flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--regular)}
+.st-mname i{color:var(--placeholder);font-style:normal;font-size:11.5px}
+.st-mtrack{flex:1;min-width:0;height:12px;background:var(--border-light);border-radius:3px;display:flex;overflow:hidden}
+.st-mseg{height:100%;flex:none;border-radius:0}
+/* 段间 2px 缝：只在与左边那段够宽时才挖，否则细段会被吃掉（同按天图的 .sep 规则，横向版） */
+.st-mseg.mgap{border-left:2px solid var(--card)}
+.st-mrow:nth-child(odd) .st-mseg.mgap{border-left-color:var(--panel)}
+.st-mnum{width:72px;flex:none;text-align:right;color:var(--text)}
+.st-mshare{width:58px;flex:none;text-align:right;color:var(--secondary)}
+.st-mcnt{width:64px;flex:none;text-align:right;color:var(--placeholder)}
+
+/* ===== R6 会话视图（view='sess'）=====
+   两栏各自滚动：外层 .main 保留它「唯一滚动容器」的身份给请求日志用（:111），会话这一份把 overflow
+   换成 hidden，滚动交给 .sv-list / .sv-cur —— 一个会话展开后可能有上千行事件，让详情把列表一起顶走，
+   等于每次都要重新找会话。 */
+.sv-main{display:flex;padding:0;overflow:hidden}
+.sv-side{width:320px;flex:none;min-height:0;display:flex;flex-direction:column;border-right:1px solid var(--border-light)}
+.sv-side-head{flex:none;padding:12px 12px 9px;border-bottom:1px solid var(--border-light);display:flex;flex-direction:column;gap:8px}
+.sv-side-row{display:flex;align-items:center;gap:8px;font-size:11.5px;color:var(--placeholder)}
+.sv-side-n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sv-sort{width:106px;flex:none}
+.sv-list{flex:1;min-height:0;overflow-y:auto;padding:8px 8px 24px}
+.sv-cur{flex:1;min-width:0;min-height:0;overflow-y:auto;padding:18px 20px 40px}
+/* 左栏里的空态：默认 .empty 是给整页宽的空态（56px 内边距 + 卡片边框），塞进 320px 的栏里太大 */
+.sv-empty{padding:26px 12px;border:none;background:transparent;font-size:12.5px}
+/* 列表项选中态沿用主色浅底（同 .card.sel / .st-bar.on），不另造一套高亮 */
+.sv-item{padding:7px 9px;border:1px solid transparent;border-radius:8px;margin-bottom:3px;cursor:pointer}
+.sv-item:hover{background:var(--panel)}
+.sv-item.on{background:#f2f6ff;border-color:var(--primary)}
+.sv-item-1{display:flex;align-items:center;gap:7px;min-width:0}
+/* key（uuid）可能很长：省略号是必需的，元素本身要 min-width:0 才让得出来 */
+.sv-item-t{font-size:13px;font-weight:600;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sv-item-2{font-size:11.5px;color:var(--placeholder);margin:2px 0 0 17px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sv-item-3{display:flex;align-items:center;gap:10px;flex-wrap:wrap;font-size:11.5px;color:var(--secondary);margin:3px 0 0 17px;font-variant-numeric:tabular-nums}
+.sv-item-n{margin-left:auto;color:var(--placeholder)}
+/* I16 子 agent 拓扑：列表里的子会话缩进 + 折线前缀（层级判据来自服务端的显式谱系 parentKey，
+   认不出父的那些照旧平铺）。合计那一格只在真有子会话时出现，用哑色副文本，不跟本体的数抢注意力。 */
+.sv-item.sub{padding-left:20px}
+.sv-item.sub .sv-item-2,.sv-item.sub .sv-item-3,.sv-item.sub .sv-item-4{margin-left:17px}
+.sv-sub-branch{color:var(--placeholder);font-family:monospace;flex:none;margin-left:-11px}
+.sv-item-sub{color:var(--placeholder)}
+.sv-item-4{margin:3px 0 0 17px}
+.sv-head{display:flex;align-items:flex-end;gap:12px;flex-wrap:wrap;margin-bottom:12px}
+.sv-title{font-size:17px;font-weight:700;color:var(--text);line-height:1.35;word-break:break-all}
+
+/* I16 子 agent 拓扑：右栏顶部的「父会话 / 子 agent」块。左边一条竖线表示这是谱系不是普通统计条，
+   与 .sess-sum 那排数字在视觉上分开（后者是「花了多少」，这里是「这些东西是谁跟谁」）。 */
+.sv-tree{margin:0 0 12px;padding:8px 10px;border-left:2px solid var(--border-light);background:var(--panel);border-radius:0 6px 6px 0}
+.sv-tree-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:var(--secondary)}
+.sv-tree-row+.sv-tree-row{margin-top:5px}
+.sv-tree-k{color:var(--placeholder);flex:none}
+.sv-tree-link{color:var(--primary);cursor:pointer;text-decoration:none;font-family:monospace;word-break:break-all}
+.sv-tree-link:hover{text-decoration:underline}
+.sv-tree-note{color:var(--placeholder);font-size:11.5px}
+.sv-tree-sub{color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:520px}
+.sv-tree-kids{display:block}
+.sv-tree-kid{display:flex;align-items:center;gap:7px;padding:3px 6px;margin-top:4px;border-radius:6px;cursor:pointer;background:var(--card);border:1px solid var(--border-light)}
+.sv-tree-kid:hover{border-color:var(--primary)}
+.sv-tree-kid.err{border-left:3px solid var(--red)}
+.sv-tree-kid-t{font-size:12px;color:var(--text);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sv-tree-kid-n{margin-left:auto;font-size:11.5px;color:var(--placeholder);font-variant-numeric:tabular-nums;flex:none}
+
+/* 概览条：定宽容器内**按真实时间比例**落点（同 .st-mtrack / .st-mseg 的「按比例分段 + 段间 2px 缝」，
+   见 :422-426），但位置由时间决定而不是等分 —— 轮与轮之间可能有真实的挂机空档，等分会把空档画成工作。
+   绝对定位在这里是必需的（而不是 flex 等分）：空档要真的是空的。 */
+.sv-ov{margin:12px 0 14px}
+.sv-ov-h{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:11.5px;color:var(--secondary);margin-bottom:5px}
+.sv-ov-h .li{display:inline-flex;align-items:center;gap:5px}
+.sv-ov-h .sv-hint{margin-left:auto;color:var(--placeholder)}
+.sv-chip{width:9px;height:9px;border-radius:2px;flex:none;display:inline-block}
+/* 指针跨两条轨：所以包一层 relative 容器，轨道保持 overflow:hidden 各自裁切 */
+.sv-ov-body{position:relative}
+.sv-mtrack{position:relative;height:12px;background:var(--border-light);border-radius:3px;overflow:hidden}
+.sv-mtrack+.sv-mtrack{margin-top:3px}
+.sv-mseg{position:absolute;top:0;bottom:0;border-radius:0}
+/* 段间 2px 缝：只在与左边那段够宽时才挖，否则细段会被整段吃掉（同 :424 的 .mgap 规则） */
+.sv-mseg.mgap{border-left:2px solid var(--card)}
+/* 前景轨的三类段。配色复用统计图那套**已验证**的分类色（等待=--s-out / 解码=--s-in / 工具=--s-cache），
+   不新造颜色：新颜色得重跑一遍 CVD 与对比度校验，而这三个是在浅色面上跑过的。 */
+.sv-mseg.wait{background:var(--s-out)}
+.sv-mseg.llm{background:var(--s-in)}
+.sv-mseg.tool{background:var(--s-cache)}
+.sv-mseg.tool.err{background:var(--red)}
+/* 0 宽空气换成一根斜纹记号：失败调用（ttft/dur 都是 0）、配不上的 result 都走这里 —— 只标位置，不编时长 */
+.sv-mseg.zero{background:repeating-linear-gradient(45deg,var(--placeholder) 0 2px,rgba(0,0,0,0) 2px 4px)}
+.sv-cur-line{position:absolute;top:-2px;bottom:-2px;width:2px;background:var(--text);border-radius:1px;pointer-events:none}
+.sv-ov-x{display:flex;justify-content:space-between;font-size:11px;color:var(--placeholder);margin-top:3px;font-variant-numeric:tabular-nums}
+
+/* 逐轮用量图：横轴是**轮次序号**（等宽分列，真实时间轴归概览条管，两边不抢语义）。
+   柱子是纯 CSS 百分比（同统计图那套 :3019 的归一逻辑），折线用一张铺满的 SVG（preserveAspectRatio=none），
+   x 坐标按「第 i 列中心 = (i+0.5)/N」算 —— 与 flex 等分列严格对齐的前提是列本身等宽，所以列里不许有内容撑宽。 */
+.sv-chart{margin:12px 0 14px;border:1px solid var(--border-light);border-radius:8px;background:var(--card);padding:8px 10px 6px}
+.sv-chart-h{display:flex;align-items:center;gap:12px;flex-wrap:wrap;font-size:11.5px;color:var(--secondary);cursor:pointer;user-select:none}
+.sv-chart-h .li{display:inline-flex;align-items:center;gap:5px}
+.sv-chart-h .sv-hint{margin-left:auto;color:var(--placeholder)}
+.sv-chart-body{position:relative;display:flex;gap:2px;height:120px;margin-top:8px}
+.sv-col{position:relative;flex:1;min-width:0;cursor:pointer;border-radius:2px}
+.sv-col:hover{background:var(--border-light)}
+/* 柱体限宽居中：轮少时 flex 等分会把每列撑到几百像素宽，满宽柱子就是几大块纯色的布。
+   限宽只收窄**视觉**，点击热区仍是整列（.sv-col），折线 x 按列中心算也不受影响。 */
+.sv-bar{position:absolute;top:0;bottom:0;left:0;right:0;max-width:56px;margin:0 auto;display:flex;flex-direction:column;justify-content:flex-end}
+.sv-bar i{display:block;width:100%}
+.sv-bar i:first-child{border-radius:0 0 2px 2px}
+.sv-bar i:last-child{border-radius:2px 2px 0 0}
+.sv-bar i:only-child{border-radius:2px}
+/* 压缩标记（通用：谁落了 compacts 谁进点）：红点落在该轮上下文占用率的高度上，tooltip 带压缩前后 token。
+   bare = 这个会话拿不到窗口容量，百分比无从谈起 → 点落基线、画成空心，只说「这轮压过」，高度不带含义。 */
+.sv-mark{position:absolute;left:50%;transform:translate(-50%,50%);width:7px;height:7px;border-radius:50%;background:var(--red);border:1px solid #fff;pointer-events:none}
+.sv-mark.bare{background:transparent;border-color:var(--red)}
+.sv-dot{width:7px;height:7px;border-radius:50%;background:var(--red);flex:none;display:inline-block}
+/* 占用率那条线读的是绝对刻度（÷窗口），柱子读的是本会话峰值归一 —— 一把图两把尺，必须在图里写清楚，
+   否则「顶到框」会被读成「这一轮最猛」，而它其实是「满窗」。分母来自查表时一并说明出处。 */
+.sv-chart-note{font-size:10.5px;color:var(--placeholder);line-height:1.5;margin-top:5px}
+/* 折线铺满容器、坐标系 0~100：x 与 flex 列中心对齐（见 .sv-chart 注释），stroke 不随拉伸变粗。
+   线可能断成几段（占用率只在拿得到窗口的轮上算得出），所以每段一条 polyline，段间留真空、不连线。 */
+.sv-line{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+.sv-chart-x{display:flex;gap:2px;margin-top:3px;font-size:10px;color:var(--placeholder);font-variant-numeric:tabular-nums}
+.sv-x-tick{flex:1;min-width:0;text-align:center;overflow:hidden;white-space:nowrap}
+
+/* 逐事件一行：时间列与标签列定宽（否则每行的内容起点会参差不齐），内容自适应省略 */
+.sv-evs{border:1px solid var(--border-light);border-radius:8px;background:var(--card);padding:4px 0}
+.sv-evs-h{font-size:11.5px;color:var(--secondary);margin:2px 0 4px}
+.sv-ev{display:flex;align-items:center;gap:8px;padding:2px 8px;font-size:12px;cursor:pointer}
+.sv-ev:hover{background:var(--panel)}
+.sv-ev.on{background:#f2f6ff;box-shadow:inset 0 0 0 1px var(--primary)}
+.sv-ev.err.on{background:#fdecec}
+.sv-ev-t{width:74px;flex:none;text-align:right;color:var(--placeholder);font-family:Consolas,Menlo,monospace;font-variant-numeric:tabular-nums}
+.sv-ev-k{width:58px;flex:none;color:var(--secondary);font-size:11px}
+.sv-ev-sub{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--regular)}
+.sv-ev-ttft{flex:none;color:var(--secondary);font-size:11.5px;font-variant-numeric:tabular-nums}
+/* TTFT / decode 迷你条：两段长度按**该轮最长的一次调用**归一，所以同一轮内各次调用可比 */
+.sv-mini{width:90px;height:8px;flex:none;display:flex;background:var(--border-light);border-radius:3px;overflow:hidden}
+.sv-mini-w{height:100%;flex:none;background:var(--s-out)}
+.sv-mini-d{height:100%;flex:none;background:var(--s-in)}
+.sv-mini-z{width:7px;height:100%;flex:none;background:repeating-linear-gradient(45deg,var(--placeholder) 0 2px,rgba(0,0,0,0) 2px 4px)}
+/* 展开的入参/返回：左缩进对齐到内容列（时间列 74 + 标签列 58 + 两个 8px 间距 = 148） */
+.sv-ev-json{padding:2px 8px 6px 148px}
+
+/* ===== R27 活跃热力图（page/dialog-heatmap.js）=====
+   五档绿阶：全年热力格与当月月历共用同一组 lv1..lv5（档位由组件按当年活跃日条数算，
+   两块深浅才可比）。浅色底上取色，与品牌绿 --green 同族、逐档加深。 */
+.hm-dialog .el-dialog__body{max-height:76vh;overflow-y:auto}
+.hm-sec{margin-bottom:20px}
+.hm-head{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+.hm-h1{font-size:15px;font-weight:700;color:var(--text)}
+.hm-stat{font-size:12.5px;color:var(--secondary)}
+.hm-stat b{color:var(--text);font-size:14px;font-variant-numeric:tabular-nums}
+.hm-stat b.rate{color:var(--green)}
+.hm-legend{margin-left:auto;display:flex;align-items:center;gap:3px;font-size:12px;color:var(--placeholder)}
+.hm-chip{width:11px;height:11px;border-radius:3px;display:inline-block;margin:0 1px}
+/* 12 个月各自成块（月首另起一列，与 GitHub 连续流不同——截图就是分块的）；
+   窄窗口整行横向滚，不压格子 */
+.hm-year{display:flex;gap:10px;justify-content:space-between;overflow-x:auto;padding-bottom:4px}
+.hm-month{flex:none}
+.hm-m-label{font-size:11px;color:var(--placeholder);margin-bottom:5px}
+.hm-grid{display:grid;grid-template-rows:repeat(7,11px);grid-auto-flow:column;grid-auto-columns:11px;gap:3px}
+.hm-cell{width:11px;height:11px;border-radius:3px;display:block}
+.hm-pad{background:transparent}
+.hm-foot{margin-top:10px;font-size:12px;color:var(--placeholder);text-align:center}
+/* 当月月历：7 列网格、周日为首（与全年热力同一口径）；非本月灰置、今日描环 */
+.hm-cal{display:grid;grid-template-columns:repeat(7,1fr);gap:6px}
+.hm-wd{font-size:11.5px;color:var(--placeholder);text-align:center;padding-bottom:2px}
+.hm-day{height:44px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:13px;color:var(--regular);font-variant-numeric:tabular-nums;border:1px solid var(--border-light)}
+.hm-day.lv0{background:#f7f8fa}
+.hm-day.lv1{background:#ddf4e7}
+.hm-day.lv2{background:#b3e8cc}
+.hm-day.lv3{background:#7dd8ac}
+.hm-day.lv4{background:#40c584;color:#fff}
+.hm-day.lv5{background:#16a34a;color:#fff}
+.hm-day.out{color:var(--placeholder);background:#fafbfc;border-color:transparent}
+.hm-day.today{font-weight:700;box-shadow:inset 0 0 0 2px var(--green)}
+.hm-cell.lv0,.hm-chip.lv0{background:#eef0f3}
+.hm-cell.lv1,.hm-chip.lv1{background:#ddf4e7}
+.hm-cell.lv2,.hm-chip.lv2{background:#b3e8cc}
+.hm-cell.lv3,.hm-chip.lv3{background:#7dd8ac}
+.hm-cell.lv4,.hm-chip.lv4{background:#40c584}
+.hm-cell.lv5,.hm-chip.lv5{background:#16a34a}
+.hm-cell.fut{opacity:.5}
+/* 悬浮提示（版式对齐 Qoder 新任务面板截图：首行日期+周几、右对齐计数、二行灰标签）。
+   position:fixed 按格子 rect 落位、pointer-events:none 防它自己挡鼠标造成闪烁 */
+.hm-tip{position:fixed;z-index:3000;transform:translate(-50%,-100%);background:var(--card);border:1px solid var(--border);border-radius:10px;box-shadow:0 6px 22px rgba(16,24,40,.14);padding:9px 14px;min-width:176px;pointer-events:none}
+.hm-tip.below{transform:translate(-50%,0)}
+.hm-tip-1{display:flex;align-items:baseline;gap:18px;font-size:13.5px}
+.hm-tip-1 b{color:var(--text)}
+.hm-tip-1 span{margin-left:auto;color:var(--text);font-variant-numeric:tabular-nums;white-space:nowrap}
+.hm-tip-2{color:var(--placeholder);font-size:12px;margin-top:2px;white-space:nowrap}
+
+/* ---- R28 历史归档弹层（page/dialog-archive.js）----
+   左树（agent → 日期文件）固定宽、自己滚；右侧列表与详情一块滚。列表里 `.arc-pv` 是弹性列，
+   其余 kv 列 flex:none —— 预览再长也只截它自己，不会把 token/工具这些挤没。
+   颜色刻意不用品牌绿做「有详情」的强调：绿在这个页面里已经被「进行中」占住了。 */
+.arc-dialog .el-dialog__body{max-height:76vh;overflow:hidden;padding-top:10px}
+.arc-wrap{display:flex;gap:14px;height:min(66vh,620px)}
+.arc-side{flex:none;width:216px;border:1px solid var(--border-light);border-radius:10px;display:flex;flex-direction:column;overflow:hidden}
+.arc-sum{padding:10px 12px;border-bottom:1px solid var(--border-light);background:var(--panel);font-size:12.5px;color:var(--secondary)}
+.arc-sum b{color:var(--text);font-size:14px;font-variant-numeric:tabular-nums}
+.arc-sum-2{margin-top:2px;color:var(--placeholder)}
+/* 已排除的 agent（config.archive.skip）：暖色小字，与 .arc-nod 同一族色 —— 都是「不是错误、但要知道」 */
+.arc-skip{margin-top:6px;padding-top:6px;border-top:1px dashed var(--border-light);font-size:11.5px;color:#c26a1b;line-height:1.4;word-break:break-all}
+.arc-tree{flex:1;overflow-y:auto;padding:4px}
+.arc-node{display:flex;align-items:center;gap:8px;padding:5px 8px;border-radius:7px;font-size:12.5px;color:var(--regular);cursor:pointer}
+.arc-node:hover{background:var(--panel)}
+.arc-node.active{background:var(--green-bg);color:var(--green);font-weight:600}
+.arc-node.lv0{font-weight:600;color:var(--text)}
+.arc-node.lv2{padding-left:26px;color:var(--secondary);font-variant-numeric:tabular-nums}
+.arc-node.lv2.active{color:var(--green)}
+.arc-ico{width:14px;height:14px;flex:none;object-fit:contain}
+.arc-dot{width:8px;height:8px;border-radius:50%;flex:none}
+.arc-nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.arc-ct{flex:none;font-size:11.5px;color:var(--placeholder);font-variant-numeric:tabular-nums}
+.arc-main{flex:1;min-width:0;display:flex;flex-direction:column;overflow-y:auto}
+.arc-bar{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.arc-scope{margin-left:auto;font-size:12px;color:var(--placeholder);font-variant-numeric:tabular-nums}
+.arc-list{flex:none;max-height:44vh;overflow-y:auto;border:1px solid var(--border-light);border-radius:10px}
+.arc-row{display:flex;align-items:center;gap:10px;padding:6px 12px;font-size:12.5px;cursor:pointer;border-bottom:1px solid var(--border-light)}
+.arc-row:last-child{border-bottom:none}
+.arc-row:hover{background:var(--panel)}
+.arc-row.open{background:var(--green-bg)}
+.arc-row.err .arc-pv{color:var(--red)}
+.arc-t{flex:none;width:132px;color:var(--secondary);font-variant-numeric:tabular-nums}
+.arc-pv{flex:1;min-width:0;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.arc-tag{flex:none;font-size:11px;color:var(--placeholder);border:1px solid var(--border-light);border-radius:4px;padding:0 4px}
+.arc-kv{flex:none;font-size:11.5px;color:var(--secondary);font-variant-numeric:tabular-nums}
+/* 「无详情」= 归档那会儿源文件就读不到了（不是加载失败），用暖色跟「错误」的红区分开 */
+.arc-nod{flex:none;font-size:11px;color:#c26a1b;background:#fdf3e7;border-radius:4px;padding:0 5px}
+.arc-arrow{flex:none;color:var(--placeholder)}
+/* 左树每行 agent 前面的折叠箭头（点它只收起/展开，点整行才是筛选） */
+.arc-caret{flex:none;width:12px;text-align:center;font-size:10px;color:var(--placeholder);cursor:pointer;user-select:none}
+.arc-caret:hover{color:var(--text)}
+.arc-caret.open{color:var(--secondary)}
+/* 加载失败横幅：不清场，只占一条；树和列表原样留着（服务重启/瞬断时最容易被误读成「数据没了」） */
+.arc-errbar{display:flex;align-items:center;gap:10px;margin-bottom:8px;padding:6px 10px;border:1px solid var(--red);border-radius:8px;background:rgba(220,38,38,.06);font-size:12.5px;color:var(--red)}
+.arc-errmsg{flex:1;min-width:0;word-break:break-all}
+/* per-agent 归档开关（左栏底部）：它是这个弹层唯一的「写」入口，所以单独一块、默认展开 */
+.arc-cfg{flex:none;border-top:1px solid var(--border-light);display:flex;flex-direction:column;max-height:44%}
+.arc-cfg-h{display:flex;align-items:center;gap:8px;padding:7px 10px;font-size:12.5px;font-weight:600;color:var(--text);cursor:pointer}
+.arc-cfg-h:hover{background:var(--panel)}
+.arc-cfg-n{margin-left:auto;font-weight:400;font-size:11.5px;color:var(--placeholder)}
+.arc-cfg-body{overflow-y:auto;padding:0 10px 8px}
+.arc-cfg-tip{font-size:11px;color:var(--placeholder);line-height:1.5;margin-bottom:6px}
+.arc-cfg-row{display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12.5px;color:var(--regular)}
+.arc-none{padding:36px;text-align:center;color:var(--placeholder);font-size:12.5px}
+.arc-more{padding-top:8px;text-align:center}
+.arc-detail{flex:none;margin-top:10px;border-top:1px solid var(--border);padding-top:10px}
+.arc-derr{color:var(--red);font-size:12.5px;padding:6px 0}
+.arc-dhead{display:flex;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:6px;font-size:12px;color:var(--secondary)}
+.arc-dtime{font-size:13px;font-weight:600;color:var(--text);font-variant-numeric:tabular-nums}
+.arc-dmeta{color:var(--placeholder)}
+.arc-ev{display:flex;gap:10px;padding:3px 0;font-size:12px;border-bottom:1px dashed var(--border-light)}
+.arc-ev-t{flex:none;color:var(--placeholder);font-variant-numeric:tabular-nums}
+.arc-ev-n{flex:none;font-weight:600;color:var(--text)}
+.arc-ev-x{flex:1;min-width:0;color:var(--secondary);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.arc-then{margin-top:8px;font-size:12px;color:#c26a1b}
+.arc-foot{margin-right:auto;max-width:620px;font-size:12px;line-height:1.5;color:var(--placeholder);text-align:left}
+
+/* ---------------- R30 磁盘占用弹层（page/dialog-usage.js） ---------------- */
+.us-hint{font-size:12px;color:var(--secondary);line-height:1.6;margin-bottom:10px}
+.us-hint code,.us-foot code{background:var(--panel);padding:1px 4px;border-radius:4px;font-size:11.5px}
+.us-err{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid #f3c5cd;background:#fdf0f2;border-radius:8px;color:var(--red);font-size:12.5px}
+.us-errmsg{flex:1;min-width:0}
+.us-sum{padding:9px 12px;border:1px solid var(--border-light);border-radius:9px;background:var(--panel);font-size:12.5px;color:var(--secondary);font-variant-numeric:tabular-nums}
+.us-sum b{color:var(--text);font-size:14px}
+.us-sum i{font-style:normal;color:var(--placeholder);margin:0 7px}
+.us-sum-2{margin-top:3px;font-size:11.5px;color:var(--placeholder)}
+.us-warn{margin-top:8px;padding:7px 10px;border-radius:8px;background:#fff7e6;border:1px solid #f5d9a8;color:#a2650b;font-size:12px;line-height:1.5}
+.us-cap{margin:14px 0 5px;font-size:12px;font-weight:600;color:var(--text)}
+.us-cap-note{font-weight:400;color:var(--placeholder);font-size:11.5px;margin-left:6px}
+/* 列宽固定、表头与行共用同一组 flex 规则 —— 手写 div 表格（本页没有 el-table）就靠这个对齐 */
+.us-head,.us-row{display:flex;align-items:center;gap:10px;padding:6px 10px;font-size:12.5px}
+.us-head{border-bottom:1px solid var(--border);color:var(--placeholder);font-size:11.5px;user-select:none}
+.us-head .us-c{cursor:pointer}
+.us-head .us-c.on{color:var(--primary);font-weight:600}
+.us-head .us-c i{font-style:normal;width:10px;display:inline-block}
+.us-c.nm{flex:1;min-width:0;display:flex;align-items:center;gap:7px}
+.us-c.num{flex:none;width:104px;text-align:right;font-variant-numeric:tabular-nums}
+.us-c.num.tot{width:132px;position:relative;padding-bottom:9px}
+.us-c.num .us-sub{display:block;font-style:normal;font-size:11px;color:var(--placeholder)}
+.us-list{border:1px solid var(--border-light);border-radius:9px;max-height:46vh;overflow-y:auto}
+.us-row{border-bottom:1px dashed var(--border-light)}
+.us-row:last-child{border-bottom:none}
+.us-row:hover{background:var(--panel)}
+.us-row.off{color:var(--placeholder)}
+.us-row.off .us-nm{text-decoration:line-through}
+.us-ico{width:14px;height:14px;flex:none;object-fit:contain}
+.us-dot{width:8px;height:8px;border-radius:50%;flex:none}
+.us-nm{font-weight:600;color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.us-row.off .us-nm{color:var(--placeholder)}
+.us-kind{font-size:11px;color:var(--placeholder);flex:none}
+.us-tag{flex:none;font-size:10.5px;padding:1px 5px;border-radius:5px;background:#eef0f4;color:var(--secondary)}
+.us-tag.part{background:#fff7e6;color:#a2650b}
+/* 占比条：相对「最大那一行」画，行底一条细线，不额外占高度 */
+.us-bar{position:absolute;left:0;bottom:2px;height:3px;border-radius:2px;background:var(--primary);opacity:.55}
+.us-shards{display:flex;flex-wrap:wrap;gap:6px}
+.us-shard{font-size:11.5px;color:var(--secondary);background:var(--panel);border:1px solid var(--border-light);border-radius:6px;padding:2px 7px;font-variant-numeric:tabular-nums}
+.us-shard b{color:var(--text);font-weight:600}
+.us-shard i{font-style:normal;color:#a2650b;margin-left:4px}
+.us-shard.orphan{border-style:dashed;color:var(--placeholder)}
+.us-none{padding:14px;text-align:center;color:var(--placeholder);font-size:12px;flex:1;width:100%}
+.us-foot{margin-right:auto;max-width:560px;font-size:11.5px;line-height:1.5;color:var(--placeholder);text-align:left}
+
+/* ---------------- R32 解析器自检弹层（page/dialog-selftest.js） ----------------
+   一页「上次回归跑成什么样」。配色沿用磁盘占用那套：绿是结论、橙是警告、红是不绿。
+   唯一多出来的是 .sf-warn 必须压在汇总上面 —— 结果出自另一版代码时，人先看到的不能是「全绿」。 */
+.sf-hint{font-size:12px;color:var(--secondary);line-height:1.6;margin-bottom:10px}
+.sf-hint code,.sf-foot code,.sf-warn code,.sf-none-b code,.sf-cmd code,.sf-file{background:var(--panel);padding:1px 4px;border-radius:4px;font-size:11.5px}
+.sf-err{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid #f3c5cd;background:#fdf0f2;border-radius:8px;color:var(--red);font-size:12.5px}
+.sf-errmsg{flex:1;min-width:0}
+.sf-none{padding:16px;border:1px dashed var(--border);border-radius:9px;background:var(--panel)}
+.sf-none-t{font-size:13.5px;font-weight:600;color:var(--text)}
+.sf-none-b{margin-top:6px;font-size:12px;color:var(--secondary);line-height:1.6}
+.sf-cmd{margin-top:9px;display:flex;align-items:center;gap:8px}
+.sf-cmd code{font-size:12.5px;padding:4px 8px;border:1px solid var(--border-light)}
+/* 版本章不一致：整页最该看见的一条，所以排在汇总之前 */
+.sf-warn{margin-bottom:9px;padding:8px 11px;border-radius:8px;background:#fff7e6;border:1px solid #f5d9a8;color:#a2650b;font-size:12px;line-height:1.6}
+.sf-warn b{color:#8a4b06}
+.sf-warn code{background:#fff3}
+.sf-sum{padding:9px 12px;border:1px solid var(--border-light);border-radius:9px;background:var(--panel);font-size:12.5px;color:var(--secondary);font-variant-numeric:tabular-nums}
+.sf-sum b{color:var(--text);font-size:14px}
+.sf-sum i{font-style:normal;color:var(--placeholder);margin:0 7px}
+.sf-sum-2{margin-top:3px;font-size:11.5px;color:var(--placeholder)}
+.sf-sum.bad{border-color:#f3c5cd;background:#fdf0f2}
+.sf-verdict{font-size:13.5px;font-weight:600;color:var(--green)}
+.sf-sum.bad .sf-verdict{color:var(--red)}
+.sf-sum.bad .sf-verdict i{font-style:normal;color:var(--placeholder);font-weight:400;font-size:12px}
+.sf-vico{font-style:normal;display:inline-block;width:16px;text-align:center}
+.sf-vico.pass{color:var(--green)}.sf-vico.fail{color:var(--red)}
+.sf-cap{margin:14px 0 5px;font-size:12px;font-weight:600;color:var(--text)}
+.sf-cap-note{font-weight:400;color:var(--placeholder);font-size:11.5px;margin-left:6px}
+.sf-list{border:1px solid var(--border-light);border-radius:9px;overflow:hidden}
+.sf-row{border-bottom:1px dashed var(--border-light);padding:6px 10px;font-size:12.5px}
+.sf-row:last-child{border-bottom:none}
+.sf-row.fail,.sf-row.timeout,.sf-row.error{background:#fdf0f2}
+.sf-st{display:inline-block;width:16px;text-align:center;font-weight:700;color:var(--green)}
+.sf-row.fail .sf-st,.sf-row.timeout .sf-st{color:var(--red)}
+.sf-row.error .sf-st{color:#a2650b}
+.sf-nm{margin-left:6px}
+.sf-title{color:var(--text)}
+.sf-row.fail .sf-title,.sf-row.timeout .sf-title{font-weight:600}
+.sf-file{margin-left:7px;font-size:11px;color:var(--placeholder)}
+.sf-ms{float:right;font-variant-numeric:tabular-nums;color:var(--placeholder);font-size:11.5px}
+.sf-tag{margin-left:7px;font-size:10.5px;padding:1px 5px;border-radius:5px;background:#eef0f4;color:var(--secondary)}
+.sf-tag.bad{background:#fde7ec;color:var(--red)}
+.sf-tag.fail,.sf-tag.timeout{background:#fde7ec;color:var(--red)}
+.sf-tag.error{background:#fff7e6;color:#a2650b}
+/* 不绿的行把失败行摊开：runner 已经替我们收好了（reds 最多 12 条），这里只负责别藏 */
+.sf-detail{clear:both;margin:4px 0 2px 22px;padding-left:9px;border-left:2px solid #f3c5cd}
+.sf-tail{font-size:11.5px;color:var(--secondary)}
+.sf-reds{margin:4px 0 0;padding:6px 8px;background:#fff;border:1px solid var(--border-light);border-radius:6px;font-size:11.5px;line-height:1.55;color:var(--red);white-space:pre-wrap;word-break:break-all;max-height:20vh;overflow:auto}
+/* 没跑的：按「为什么这一类不收」成组，光列文件名等于没解释 */
+.sf-skip{border:1px solid var(--border-light);border-radius:9px;padding:4px 10px}
+.sf-skip-g{padding:7px 0;border-bottom:1px dashed var(--border-light)}
+.sf-skip-g:last-child{border-bottom:none}
+.sf-skip-h{font-size:12px;font-weight:600;color:var(--text)}
+.sf-skip-note{display:block;font-weight:400;font-size:11.5px;color:var(--placeholder);line-height:1.5;margin-top:1px}
+.sf-skip-i{display:flex;gap:8px;align-items:baseline;margin-top:5px;font-size:11.5px;color:var(--secondary)}
+.sf-skip-i code{flex:none;background:var(--panel);border:1px solid var(--border-light);padding:1px 5px;border-radius:5px;font-size:11px}
+.sf-skip-i span{flex:none;min-width:150px;color:var(--text)}
+.sf-skip-i em{font-style:normal;color:var(--placeholder);line-height:1.5}
+.sf-foot{margin-right:auto;max-width:600px;font-size:11.5px;line-height:1.5;color:var(--placeholder);text-align:left}
+
+/* ---------- R9 异常巡检（侧栏徽章 + 弹层 + 只看异常） ---------- */
+.nav-item .alert-cnt{margin-left:8px;min-width:18px;height:18px;padding:0 6px;border-radius:9px;
+  background:var(--red);color:#fff;font-size:11px;line-height:18px;text-align:center;font-weight:700}
+.alert-only-cb{flex:none;margin-left:2px}
+
+.al-dialog .el-dialog__body{max-height:72vh;overflow:auto}
+.al-hint{font-size:12px;color:var(--secondary);line-height:1.6;margin-bottom:10px}
+.al-hint code{background:var(--panel);padding:1px 4px;border-radius:4px;font-size:11.5px}
+.al-hint b{color:var(--text)}
+.al-err{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid #f3c5cd;background:#fdf0f2;border-radius:8px;color:var(--red);font-size:12.5px}
+.al-errmsg{flex:1;min-width:0}
+.al-rules{border:1px solid var(--border-light);border-radius:9px;padding:4px 12px;background:var(--panel);margin-bottom:12px}
+.al-rule{display:flex;align-items:center;gap:10px;padding:9px 0;border-bottom:1px dashed var(--border-light)}
+.al-rule:last-child{border-bottom:none}
+.al-rule-name{width:128px;flex:none;font-size:13px;color:var(--text);font-weight:600}
+.al-rule-tip{flex:1;font-size:11.5px;color:var(--placeholder);line-height:1.4;margin-right:8px}
+.al-rule-val{flex:none;display:flex;align-items:center;gap:6px}
+.al-unit{font-size:11.5px;color:var(--placeholder)}
+.al-rule-window{flex:none;display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--secondary)}
+.al-save-row{display:flex;align-items:center;justify-content:space-between;padding:10px 0 4px}
+.al-count{font-size:12.5px;color:var(--secondary)}
+.al-count b{color:var(--red);font-size:14px}
+.al-hits{margin-top:4px}
+.al-sec-head{font-size:12px;font-weight:600;color:var(--text);margin-bottom:6px}
+.al-hit{display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:7px;cursor:pointer;transition:background .15s}
+.al-hit:hover{background:var(--panel)}
+.al-hit+.al-hit{border-top:1px dashed var(--border-light)}
+.al-hit-l{flex:1;min-width:0;display:flex;align-items:center;gap:8px}
+.al-agent{flex:none;font-size:12px;color:var(--primary);font-weight:600}
+.al-rules-tag{flex:none;display:inline-flex;gap:4px}
+.al-preview{flex:1;min-width:0;font-size:12.5px;color:var(--regular);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.al-hit-r{flex:none;display:flex;align-items:center;gap:10px;font-size:11.5px;color:var(--secondary);font-variant-numeric:tabular-nums}
+.al-m{color:var(--secondary)}
+.al-time{color:var(--placeholder)}
+.al-more{font-size:11.5px;color:var(--placeholder);margin-top:6px;text-align:center}
+/* ===================== I9 两轮 diff 弹层 ===================== */
+.cmp-dialog .el-dialog__body{max-height:76vh;overflow-y:auto}
+.cmp-head{display:flex;align-items:stretch;gap:14px;margin-bottom:6px}
+.cmp-col{flex:1;min-width:0}
+.cmp-col.cmp-col-b{border-right:1px solid var(--border-light);padding-right:14px}
+.cmp-vs{flex:none;align-self:center;font-size:13px;font-weight:800;color:var(--placeholder);letter-spacing:1px}
+.cmp-hdr{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.cmp-agent{font-size:14px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cmp-meta{font-size:11.5px;color:var(--placeholder);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cmp-table{border:1px solid var(--border-light);border-radius:10px;background:var(--panel);margin:12px 0;overflow:hidden}
+.cmp-row{display:flex;align-items:center;gap:12px;padding:9px 12px;border-bottom:1px solid var(--border-light);min-width:0}
+.cmp-row:last-child{border-bottom:none}
+.cmp-label{flex:none;width:118px;font-size:12.5px;color:var(--secondary);font-weight:600;display:flex;align-items:center;gap:6px}
+.cmp-label b{color:var(--placeholder);font-weight:600}
+.cmp-label .cmp-hot{color:var(--primary);font-size:11px;font-weight:700}
+.cmp-val,.cmp-barwrap{flex:1;min-width:0;font-size:13px;color:var(--secondary);font-variant-numeric:tabular-nums}
+/* I9 指标行：谁大的一侧加深加粗（cmpRows 算出来的 big，不再靠「左列恒粗」） */
+.cmp-val.big{color:var(--text);font-weight:600}
+/* 耗时条：两列各自一轨，以较长者为满刻度；慢的那条顶满、快的那条按比例 */
+.cmp-dur{align-items:flex-end;padding-top:13px;padding-bottom:13px}
+.cmp-barwrap{display:flex;align-items:center}
+.cmp-bar{height:16px;background:var(--primary);border-radius:8px;min-width:2px;display:flex;align-items:center;color:#fff;font-size:11px;font-weight:700;padding:0 7px;white-space:nowrap}
+.cmp-bar span{overflow:hidden;text-overflow:ellipsis}
+.cmp-bar.bar-b{background:#16a34a}
+.cmp-body{margin-top:4px}
+.cmp-sec{margin:14px 0}
+.cmp-sec-head h4{font-size:13px;color:var(--text);font-weight:700;margin-bottom:8px}
+.cmp-cols{display:flex;gap:14px;align-items:flex-start}
+.cmp-cols .cmp-col{border:1px solid var(--border-light);border-radius:9px;padding:10px 12px;background:#fff;min-width:0}
+.cmp-pre{white-space:pre-wrap;word-break:break-word;font-family:Consolas,Menlo,monospace;font-size:12px;line-height:1.6;max-height:260px;overflow:auto}
+.cmp-tool{margin-bottom:8px;padding-bottom:8px;border-bottom:1px dashed var(--border-light)}
+.cmp-tool:last-child{border-bottom:none;margin-bottom:0;padding-bottom:0}
+.cmp-none{font-size:12.5px;color:var(--placeholder)}
+.cmp-loading{color:var(--placeholder);font-size:13px;padding:18px 0;text-align:center}
+.cmp-err{display:flex;align-items:center;gap:10px;padding:10px 12px;border:1px solid #f3c5cd;background:#fdf0f2;border-radius:8px;color:var(--red);font-size:12.5px}
+.cmp-foot{font-size:11.5px;color:var(--placeholder);margin-right:auto}

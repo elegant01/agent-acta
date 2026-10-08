@@ -1,0 +1,68 @@
+{
+  "name": "@yxzpro/agent-acta",
+  "version": "2.14.7",
+  "author": "elegant001",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/elegant01/agent-acta.git"
+  },
+  "homepage": "https://github.com/elegant01/agent-acta#readme",
+  "description": "本地 AI agent 请求日志面板：聚合 atomcode / codebuddy / workbuddy / claude / codex / codearts / gemini / cursor / kimi / dsh 等本地日志，看每轮耗时、token、缓存、上下文与工具调用",
+  "bin": {
+    "agentacta": "./agent-acta-server.mjs",
+    "agentacta-mcp": "./mcp-server.mjs"
+  },
+  "files": [
+    "agent-acta-server.mjs",
+    "core/",
+    "mcp-server.mjs",
+    "archive.mjs",
+    "search.mjs",
+    "agent-acta-page.html",
+    "agent-acta-widget.html",
+    "page/",
+    "widget/",
+    "hooks/",
+    "parsers/",
+    "vendor/",
+    "tools/",
+    "REFERENCE.md",
+    "LOGFORMATS.md",
+    "plugin/"
+  ],
+  "engines": {
+    "node": ">=22.5"
+  },
+  "license": "MIT",
+  "keywords": [
+    "agent",
+    "log",
+    "local",
+    "dashboard",
+    "atomcode",
+    "claude",
+    "codex",
+    "kimi",
+    "dsh",
+    "dsh-plugin"
+  ],
+  "exports": {
+    ".": "./plugin/plugin.mjs",
+    "./client": "./plugin/client.js",
+    "./cordis.patch.yml": "./plugin/cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./plugin/cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar",
+        "@deepseek-ai/dsh-client-ui-layout"
+      ]
+    }
+  }
+}

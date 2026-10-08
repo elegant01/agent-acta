@@ -1,0 +1,7 @@
+{
+  "name": "agent-acta-widget-float",
+  "private": true,
+  "version": "1.0.0",
+  "description": "AgentActa 桌面悬浮卡片壳（由 agentacta --client 拉起；Electron 运行时在数据目录，不进包）",
+  "main": "main.js"
+}

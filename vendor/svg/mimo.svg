@@ -1,0 +1,66 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="mac-surface" x1="512" y1="100" x2="512" y2="924" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#242424"/>
+      <stop offset="0.22" stop-color="#111111"/>
+      <stop offset="0.7" stop-color="#050505"/>
+      <stop offset="1" stop-color="#000000"/>
+    </linearGradient>
+    <linearGradient id="mac-edge" x1="512" y1="100" x2="512" y2="924" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.52"/>
+      <stop offset="0.3" stop-color="#FFFFFF" stop-opacity="0.12"/>
+      <stop offset="0.72" stop-color="#FFFFFF" stop-opacity="0.03"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.18"/>
+    </linearGradient>
+    <radialGradient id="mac-highlight" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(512 88) rotate(90) scale(410 640)">
+      <stop stop-color="#FFFFFF" stop-opacity="0.18"/>
+      <stop offset="0.58" stop-color="#FFFFFF" stop-opacity="0.025"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="mark-glass" x1="512" y1="437" x2="512" y2="1273" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF"/>
+      <stop offset="0.22" stop-color="#FFFDF7"/>
+      <stop offset="0.62" stop-color="#F1EBE2"/>
+      <stop offset="1" stop-color="#D2CBC1"/>
+    </linearGradient>
+    <linearGradient id="mark-edge" x1="512" y1="437" x2="512" y2="1273" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.82"/>
+      <stop offset="0.42" stop-color="#FFFFFF" stop-opacity="0.18"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0.38"/>
+    </linearGradient>
+    <filter id="mac-shadow" x="76" y="76" width="872" height="884" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="8" stdDeviation="7" flood-color="#000000" flood-opacity="0.42"/>
+    </filter>
+    <filter id="mark-glass-shadow" x="140" y="140" width="750" height="760" filterUnits="userSpaceOnUse">
+      <feDropShadow dx="0" dy="12" stdDeviation="9" flood-color="#000000" flood-opacity="0.48"/>
+      <feDropShadow dx="0" dy="-2" stdDeviation="2" flood-color="#FFFFFF" flood-opacity="0.22"/>
+    </filter>
+    <clipPath id="mac-shape">
+      <rect x="100" y="100" width="824" height="824" rx="185"/>
+    </clipPath>
+  </defs>
+  <!-- Legacy ICNS fallback for the macOS app-icon template:
+       1024 canvas, 824×824 body, 185px corner radius. The restrained material below
+       mirrors the system Settings icon when dynamic Icon Composer layers are unavailable. -->
+  <g filter="url(#mac-shadow)">
+    <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#mac-surface)"/>
+    <g clip-path="url(#mac-shape)">
+      <rect x="100" y="100" width="824" height="824" fill="url(#mac-highlight)"/>
+    </g>
+    <rect x="103" y="103" width="818" height="818" rx="182" stroke="url(#mac-edge)" stroke-width="6"/>
+  </g>
+  <!-- Figma 2089:3127 mark; center it in the squircle body and apply only macOS material. -->
+  <g
+    fill="url(#mark-glass)"
+    stroke="url(#mark-edge)"
+    stroke-width="1.5"
+    filter="url(#mark-glass-shadow)"
+  >
+    <g transform="translate(259.226 273.711) scale(1.6)">
+      <path d="M148.366 285.015C148.366 292.11 142.615 297.861 135.52 297.861H12.8463C5.7516 297.861 0.000164694 292.11 0.000164694 285.015V188.226C0.000164694 176.975 13.4382 171.16 21.64 178.862L65.3896 219.944C70.3331 224.586 78.0334 224.586 82.9768 219.944L126.726 178.862C134.928 171.16 148.366 176.975 148.366 188.226V285.015Z"/>
+      <path d="M148.366 110.195C148.366 117.29 142.615 123.041 135.52 123.041H12.8462C5.75142 123.041 0 117.29 0 110.195V13.4063C0 2.15525 13.438 -3.66005 21.6398 4.04164L65.3894 45.1236C70.3329 49.7656 78.0332 49.7656 82.9767 45.1236L126.726 4.04164C134.928 -3.66005 148.366 2.15525 148.366 13.4063V110.195Z"/>
+      <path d="M205.939 12.8462C205.939 5.75143 211.691 0 218.785 0H288.261C295.355 0 301.107 5.75143 301.107 12.8462V109.87C301.107 116.965 295.355 122.716 288.261 122.716H218.785C211.691 122.716 205.939 116.965 205.939 109.87V12.8462Z"/>
+      <path d="M315.968 235.958C315.968 270.146 288.254 297.86 254.067 297.86C219.879 297.86 192.165 270.146 192.165 235.958C192.165 201.771 219.879 174.056 254.067 174.056C288.254 174.056 315.968 201.771 315.968 235.958Z"/>
+    </g>
+  </g>
+</svg>

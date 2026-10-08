@@ -1,0 +1,1998 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- 服务端发这张页面时会把下面 content 里那个 token 换成本进程的代码指纹（见 agent-acta-server.mjs 的 '/' 路由）。
+     只放**一处**、且不参与任何 JS 判断 —— token 在整个文件里必须唯一：服务端是全文替换，
+     页面上再写一遍会被一起换掉（曾把比对写成 `PAGE_BUILD === '<token>'`，注入后左右两边一起变，永远判「不一致」）。 -->
+<meta name="agent-log-build" content="__AGENT_LOG_BUILD__">
+<!-- R25 批 0：页面文件指纹（html + /page/*.js + /page/style.css）。与上面那枚同理、同样只出现一处：
+     服务端 BUILD 只哈希服务端脚本，拆出 /page/ 之后「只改页面文件」不会让它变，红条就漏了这一类错配。 -->
+<meta name="agent-acta-page-build" content="__AGENT_LOG_PAGE_BUILD__">
+<title>Agent 请求日志</title>
+<link rel="stylesheet" href="/vendor/element-plus.css">
+<link rel="stylesheet" href="/page/style.css">
+</head>
+<body>
+<div id="app" v-cloak>
+  <el-config-provider :locale="zhCn">
+  <!-- R25 批 2：顶栏的模板在 page/topbar.js。这里把根那份状态原样递进去（live/scanning/scanMs/idle*
+       由 SSE 与 /api/settings 回写，归组件持有就会有两份真相），三个命令回根的既有处理函数。 -->
+  <aa-topbar :client-launching="clientLaunching" @launch-client="launchClient"
+    :live="live" :paused="paused" :scanning="scanning" :live-text="liveText"
+    :scan-ms="scanMs" :scan-options="scanOptions" @set-scan="setScan"
+    :idle-exit-ms="idleExitMs" :idle-options="idleOptions" :idle-text="idleText" @set-idle="setIdle"></aa-topbar>
+
+  <!-- 页面/服务版本不一致的红条（见 versionMismatch）。
+       升级包之后旧的服务进程还在占端口时，**页面是新的、接口是旧的**：点「用量统计」请求 /api/daily 会 404，
+       .cursor 也扫不到、手动加也加不上 —— 三件事看着不相干，根子是同一个。这里说清是哪一版、以及怎么换班。 -->
+  <div v-if="versionMismatch" class="vm-bar">
+    <el-icon><Warning></Warning></el-icon>
+    <div class="vm-txt">
+      <b>页面和服务的版本不一致</b>：{{ versionMismatch }}
+      <div class="vm-fix">在终端里执行 <code>agentacta --open</code>（会自动重启旧服务），若仍不行就先 <code>agentacta --stop</code> 再 <code>agentacta --open</code>，然后刷新本页。</div>
+    </div>
+  </div>
+
+  <div class="layout">
+    <!-- R25 批 2：侧栏模板在 page/sidebar.js。渲染用的状态一律还是根的那一份（筛选喂 snapUrl、
+         深链也在根），组件只发命令。noLlm 的回写：模板写 kebab 的 @update:no-llm（编译出 onUpdate:noLlm），
+         组件发 $emit('update:no-llm') —— Vue 的 emit 在精确名之外还会按 camelize 兜底找监听器，两边对得上
+         （已在真浏览器里双向量过：点勾选改根状态、改根状态变勾选）。 -->
+    <aa-sidebar :view="view" @switch-view="switchView"
+      :ctx-unfilled="ctxUnfilled" @open-diag="diagVisible = true" @open-ctxw="ctxwVisible = true" @open-heatmap="heatmapVisible = true" @open-archive="archiveVisible = true" @open-usage="usageVisible = true" @open-selftest="selftestVisible = true" @open-add="openAdd"
+      :alert-count="alertCount" @open-alert="alertVisible = true"
+      :f-agent="fAgent" :all-count="all.length" @pick-agent="pickAgent"
+      :side-agents="sideAgents" :agents="agents" :agents-meta="agentsMeta"
+      :is-disabled="isDisabled" :is-icon-only="isIconOnly" :is-missing="isMissing" :path-tip="pathTip"
+      :trae-busy="traeBusy" :is-trae-key-agent="isTraeKeyAgent" @trae-command="traeCommandUI"
+      :cursor-hook-busy="cursorHookBusy" :is-cursor-hook-agent="isCursorHookAgent" :cursor-hook-state="cursorHookState" @cursor-hook="toggleCursorHook"
+      :toggle-loading="toggleLoading" @toggle-agent="toggleAgentUI" @remove-agent="removeAgentUI"
+      :no-llm="showNoLLM" @update:no-llm="showNoLLM = $event"></aa-sidebar>
+
+    <div class="main-outer">
+    <!-- R25 批 4：请求日志视图的挂载点（模板在 page/log-view.js + page/log-card.js，状态与请求全部留在根）。
+         不变式留在这儿：.main 是**唯一**的滚动容器，所以这一份必须 v-show 不能 v-if —— 销毁重建会丢滚动位置
+         和已展开的详情；会话视图那一份是 v-if，它自己两栏内滚，不共享这个位置。
+         滚动三件套（mainScroll / showTop 与那两个函数）是本批唯一搬进组件的状态，它们在组件内部自洽：
+         根里的 locateEntry 与 collapseCard 都按 id / closest('.card') 拿元素，不经过这个 ref。
+         其余一个都不搬 —— 筛选喂 snapUrl 与深链，详情缓存与折叠开关要跨视图切换留着。
+         props 面宽是 R25 评审时接受下的代价（见 sess-view 挂载点上面那段与 R25 条目）。 -->
+    <aa-log-view :active="view === 'log'"
+      :booting="booting" :scanning="scanning" :all="all" :filtered="filtered" :visible="visible"
+      :capped="capped" :fail-count="failCount" :range-total="rangeTotal"
+      :f-search="fSearch" @update:f-search="fSearch = $event"
+      :f-agents="fAgents" @update:f-agents="fAgents = $event" @agents-multi="pickAgentsMulti"
+      :f-agent="fAgent" :side-agents="sideAgents" :is-icon-only="isIconOnly"
+      :f-projects="fProjects" :f-project="fProject" :project-list="projectList"
+      :pick-project="pickProject" :pick-projects-multi="pickProjectsMulti"
+      :f-dates="fDates" @update:f-dates="fDates = $event" @range-change="pickRange"
+      :f-status="fStatus" @update:f-status="fStatus = $event" @status-change="updateHash"
+      :alert-only="alertOnly" @update:alert-only="alertOnly = $event" :alert-count="alertCount"
+      :f-limit="fLimit" @update:f-limit="fLimit = $event" @limit-change="loadSnapshot"
+      @fail-toggle="fStatus = fStatus==='error' ? '' : 'error'; updateHash()"
+      :search-on="searchOn" :search-q="searchQ" :search-regex="searchRegex" :search-busy="searchBusy"
+      :search-narrow="searchNarrow" :search-error="searchError" :search-meta="searchMeta"
+      :search-capped="searchCapped" :search-hits-count="searchHits.length"
+      @search-run="runSearch()" @search-clear="clearSearch()" @search-toggle-narrow="toggleSearchNarrow"
+      :shown="shown" @load-more="shown += STEP"
+      :expanded-id="expandedId" :secs="secs" :call-open="callOpen" :tool-json-fold="toolJsonFold" :full-ids="fullIds"
+      :card-memo="cardMemo" :detail-of="detailOf" :title-of="titleOf" :is-live="isLive"
+      :compare-is-of="compareIsOf"
+      :search-icon="Search" :trend-icon="TrendCharts" :download-icon="Download" :refresh-icon="Refresh"
+      @open-stats="openStats" @export-json="exportJSON" @refresh="refresh"
+      @export-detail="exportEntryDetail"
+      @export-repro="exportRepro"
+      @toggle="toggle" @open-session="openSession" @collapse="collapseCard" @load-full="loadFull"
+      @fold-json="toggleJsonFold" @fold-callout="toggleCallOut" @toggle-sec="toggleSec" @reload-detail="reloadDetail"
+      @compare="onCompare"></aa-log-view>
+
+    <!-- R25 批 3：会话视图的挂载点（模板在 page/sess-view.js，状态与请求全部留在根）。
+         不变式留在这儿：两栏各自滚动（.sv-main 把 .main 的 overflow 换成 hidden，滚动交给
+         .sv-list / .sv-cur）—— 一个会话展开后可能有上千行事件，让详情把列表一起顶走，等于每次都要重新找会话。
+         为什么 props 面这么宽、一个状态都不搬：本视图是 v-if，切去「请求日志」整棵子树就销毁了；
+         选中项/展开的轮/详情缓存只有活在根里才切回来还在（搬进组件=行为变化），理由见 sess-view.js 头部。 -->
+    <aa-sess-view v-if="view === 'sess'"
+      :sess-search="sessSearch" @update:sess-search="sessSearch = $event"
+      :sess-sort="sessSort" @update:sess-sort="sessSort = $event"
+      :sess-list="sessList" :sess-list-filtered="sessListFiltered" :sess-list-capped="sessListCapped"
+      :sess-list-error="sessListError" :sess-list-loading="sessListLoading" :search-icon="Search"
+      :sess-pick="sessPick" :sess-cur="sessCur" :sess-cur-loading="sessCurLoading" @pick-session="pickSession"
+      :sess-open="sessOpen" :sess-detail="sessDetail" :sess-full-ids="sessFullIds" :sess-hi="sessHi"
+      :sess-cursor="sessCursor" :sess-span="sessSpan" :sess-from="sessFrom" :sess-to="sessTo"
+      :sess-has-events="sessHasEvents" :sess-ov-turns="sessOvTurns" :sess-ov-events="sessOvEvents"
+      :sess-ev-index="sessEvIndex" :sess-ev-rows="sessEvRows"
+      :sess-chart="sessChart" :sess-chart-open="sessChartOpen" @update:sess-chart-open="sessChartOpen = $event"
+      :tool-json-fold="toolJsonFold" :call-open="callOpen"
+      @toggle-turn="sessToggleTurn" @event-click="sessEventClick" @ov-click="sessOvClick"
+      @chart-go="sessChartGo" @collapse-turn="sessCollapseTurn" @load-full="sessLoadFull"
+      @fold-json="toggleJsonFold" @fold-callout="toggleCallOut" @open-session="openSessionByKey"></aa-sess-view>
+    </div>
+  </div>
+
+  <!-- R25 批 1：环境诊断弹层的挂载点（模板 + 探测逻辑在 page/dialog-diag.js）。
+       开关状态留在根：侧栏「环境诊断」项与弹层自己的关闭按钮都要动它。 -->
+  <aa-dialog-diag :visible="diagVisible" @update:visible="diagVisible = $event" :page-build="pageBuild"></aa-dialog-diag>
+
+  <!-- R25 批 1：用量统计弹层的挂载点（三个 tab 的模板与全部统计逻辑在 page/dialog-stats.js）。
+       根只递「统计哪一段、按什么筛」（:req，点击那一刻拼好）；弹层里那个 agent 下拉与左侧栏是
+       **同一个**筛选，所以把活状态递进去、改动报回来（@agent-change 走 pickAgent 再重算）。
+       时延分析点最慢那一行要在主列表里定位，列表状态在根上，所以报给 @locate。 -->
+  <aa-dialog-stats :visible="statsVisible" @update:visible="statsVisible = $event"
+    :req="statsReq" :f-agent="fAgent" :f-agents="fAgents" :side-agents="sideAgents"
+    @agent-change="onStatsAgentChange" @locate="locateEntry"></aa-dialog-stats>
+
+  <!-- R27 活跃热力图弹层（模板与前端聚合全在 page/dialog-heatmap.js）。
+       数据固定走 /api/daily?range=all、不跟随侧栏筛选（口径 = 任一 agent 当天有日志即活跃），
+       所以根只递「开不开」，不像统计弹层那样递 req。 -->
+  <aa-dialog-heatmap :visible="heatmapVisible" @update:visible="heatmapVisible = $event"></aa-dialog-heatmap>
+
+  <!-- R28 历史归档弹层（模板与请求逻辑全在 page/dialog-archive.js）。读的是 ~/.agent-acta/archive 下
+       被冻结的条目 —— 只读旁路，不并入主列表（数据源是归档文件，不是扫描出来的 entries）。
+       所以根只递「开不开」与 getJSON，跟热力图一样不递筛选。 -->
+  <aa-dialog-archive :visible="archiveVisible" @update:visible="archiveVisible = $event"></aa-dialog-archive>
+
+  <!-- R30 磁盘占用弹层（模板与请求逻辑全在 page/dialog-usage.js）。拉的是 /api/usage：走一遍磁盘
+       把「日志目录 / 索引片 / 归档」的占用合成一张表，与侧栏筛选无关，所以根同样只递「开不开」。 -->
+  <aa-dialog-usage :visible="usageVisible" @update:visible="usageVisible = $event"></aa-dialog-usage>
+
+  <!-- R32 解析器自检弹层（模板与请求逻辑全在 page/dialog-selftest.js）。拉的是 /api/selftest：
+       服务端只把上一次 `node test/selftest.mjs` 写的结果文件读出来，**不在这里跑测试**（一轮要串行起停
+       二十来个服务、跑两分钟，副作用挂在弹层上就没人敢刷新了）。与筛选同样无关。 -->
+  <aa-dialog-selftest :visible="selftestVisible" @update:visible="selftestVisible = $event"></aa-dialog-selftest>
+
+  <!-- R9 异常巡检弹层（模板与规则/命中列表逻辑全在 page/dialog-alert.js）。根只递「开不开」与几个格式化
+       函数；命中集合归根（供「只看异常」筛选），弹层保存后把摘要报回来更新徽章（@summary）。 -->
+  <aa-dialog-alert :visible="alertVisible" @update:visible="alertVisible = $event"
+    @locate="locateEntry" @summary="applyAlertSummary"
+    :fmt-n="fmtN" :fmt-dur="fmtDur" :fmt-time="fmtTime"></aa-dialog-alert>
+
+  <!-- R6 会话时间线弹层：同一 session 的全部轮次按时间正序串起来，逐轮懒加载详情。
+       R25 批 1 起了个组件（page/dialog-sess-timeline.js）：轮的正文/展开态都在它自己肚子里，
+       根只递「开哪一个」（:req，卡片页脚点击时写）。 -->
+  <aa-dialog-sess-timeline :visible="sessVisible" @update:visible="sessVisible = $event" :req="sessReq"></aa-dialog-sess-timeline>
+
+  <!-- R25 批 1：添加 agent 弹层的挂载点（表单与 POST 逻辑在 page/dialog-add-agent.js）。
+       添加成功后由组件 emit('added')，重拉 agents/快照仍由根做（那是根的状态）。 -->
+  <aa-dialog-add-agent :visible="addVisible" @update:visible="addVisible = $event" @added="onAgentAdded"></aa-dialog-add-agent>
+
+  <!-- R25 批 1：上下文窗口弹层的挂载点（表编辑逻辑在 page/dialog-ctxw.js）。
+       表数据不算根的：弹层自己拉、自己改，把「待填几个」上报回来给侧栏徽章（@unfilled）。 -->
+  <aa-dialog-ctxw :visible="ctxwVisible" @update:visible="ctxwVisible = $event" @unfilled="ctxUnfilled = $event"></aa-dialog-ctxw>
+
+  <!-- I9 两轮 diff 弹层的挂载点（模板与对比逻辑全在 page/dialog-compare.js）。
+       根只递「开不开」与对比的两条（:req，卡片「对比」选满两条时写）。 -->
+  <aa-dialog-compare :visible="compareVisible" @update:visible="compareVisible = $event" :req="compareReq"></aa-dialog-compare>
+  </el-config-provider>
+</div>
+
+<div id="boot">
+  <span class="boot-logo">A</span>
+  <div class="boot-txt">正在加载 AgentActa…</div>
+</div>
+<script>
+// 只干一件事：脚本迟迟不来（vendor 404、解析报错、磁盘慢）时，把占位图从「转着等」换成「一句能查的话」。
+// 必须放在 vendor 的 <script src> 之前——它们全挂了的话，只有这里的代码一定跑得到。
+window.setTimeout(function () {
+  var b = document.getElementById('boot');
+  if (!b) return;
+  b.className = 'fail';
+  b.querySelector('.boot-txt').textContent = '页面没加载起来 —— 打开浏览器控制台看报错（多半是 /vendor 下的脚本没取到）';
+}, 8000);
+</script>
+
+<script src="/vendor/vue.global.prod.js"></script>
+<script src="/vendor/element-plus.full.min.js"></script>
+<script src="/vendor/element-plus.zh-cn.js"></script>
+<script src="/vendor/element-plus-icons.js"></script>
+<script src="/page/shared.js"></script>
+<script>
+// ===== 跨端共享片段（需求书 R12：防漂移）=====
+// projNorm / projKey / rangeDayStart 的**唯一来源**是 agent-acta-server.mjs 里的 SHARED_JS，
+// 服务端在 GET / 时把它原样注入到下面这行占位符处。本文件**不许再抄一份**——以前页面/服务端
+// 各存一份、靠注释提醒人工同步，漂了就是静默的筛选错位（点项目 0 条、「今天」各算各的）。
+// test/shared-snippet-test.mjs 会拦「页面里又出现本地实现」。
+__AGENT_LOG_SHARED__
+</script>
+<script src="/page/dialog-diag.js"></script>
+<script src="/page/dialog-add-agent.js"></script>
+<script src="/page/dialog-ctxw.js"></script>
+<script src="/page/dialog-sess-timeline.js"></script>
+<script src="/page/dialog-stats.js"></script>
+<script src="/page/dialog-heatmap.js"></script>
+<script src="/page/dialog-archive.js"></script>
+<script src="/page/dialog-usage.js"></script>
+<script src="/page/dialog-selftest.js"></script>
+<script src="/page/dialog-alert.js"></script>
+<script src="/page/dialog-compare.js"></script>
+<script src="/page/topbar.js"></script>
+<script src="/page/sidebar.js"></script>
+<script src="/page/sess-view.js"></script>
+<script src="/page/log-card.js"></script>
+<script src="/page/log-view.js"></script>
+<script>
+// 占位符没被替换（直接 file:// 打开本文件，或服务端太旧不认识这个占位符）时，上面那段是空转，
+// 这里响亮地失败 —— 宁可白屏带一句能查的话，也不静默用错口径。
+// typeof 判未声明变量不抛错；片段已注入时这三个是上一段 script 顶层的 const，跨 script 可见。
+if (typeof projNorm !== 'function' || typeof projKey !== 'function' || typeof rangeDayStart !== 'function') {
+  var b0 = document.getElementById('boot');
+  if (b0) {
+    b0.className = 'fail';
+    b0.querySelector('.boot-txt').textContent = '页面缺少服务端注入的共享片段 —— 请通过服务端地址（http://127.0.0.1:' + (location.port || '14570') + '/）访问，不要直接打开 html 文件；若已是服务端地址，说明在跑的服务太旧，请升级后重启。';
+  }
+  throw new Error('agent-acta: shared snippet missing (projNorm/projKey/rangeDayStart) — 页面必须由服务端注入后访问');
+}
+// /page/shared.js 没到（404 / 服务是拆分部件的旧版，没有 /page/ 路由）时，后面的根脚本一引用就整个挂。
+// 先在这儿把话说清楚：boot 占位图要 8 秒才变字，这里立刻改文案，别让人对着转圈猜。
+if (typeof fmtN !== 'function' || typeof renderMd !== 'function' || typeof agentIcon !== 'function') {
+  var b1 = document.getElementById('boot');
+  if (b1) {
+    b1.className = 'fail';
+    b1.querySelector('.boot-txt').textContent = '页面缺少 /page/shared.js —— 若刚升级过，多半是在跑的服务还没有 /page/ 路由（拆分部件的旧版），重启服务后刷新即可。';
+  }
+  throw new Error('agent-acta: /page/shared.js missing — 服务端 /page/ 路由没供上共享函数（旧版服务？）');
+}
+</script>
+<script>
+const { createApp, ref, computed, reactive, nextTick, watch, provide } = Vue;
+const { Document, Top, Bottom, Coin, Files, Lightning, SetUp, Timer, Search, Refresh, Download, QuestionFilled, Warning, TrendCharts, DataLine } = ElementPlusIconsVue || {};
+const { ElMessage, ElMessageBox } = ElementPlus;
+
+// 服务端在把这张页面发出来的时候，把「它是哪一版」填进这个占位符（见 agent-acta-server.mjs 的 '/' 路由）。
+// 页面据此比对「我这张页面」和「正在伺候我的服务」是不是同一版 —— 升级包之后旧进程还在占端口时，
+// 这两者会不一样，而症状会散成好几件看着不相干的事（新接口 404、新 agent 扫不到、图表报 JSON 解析错）。
+//
+// ⚠ 判断「要不要比对」看的是 **location.protocol**，不是「token 有没有被替换」：
+// 旧服务把新页面从磁盘原样发出来时，token 是**原样留着**的 —— 而那恰恰是最需要报警的情形。
+//
+// token 用拼接写出来：它在整个文件里只能出现一次（<head> 那行 meta）。
+// 服务端是**全文替换**，页面上但凡再写一遍字面量，注入后那处也会被换成指纹 ——
+// 比对式两边一起变，就永远判「不一致」（第一版就是这么错的，页面上一直挂着红条）。
+const AL_BUILD_TOKEN = '__AGENT_LOG_' + 'BUILD__';
+const PAGE_BUILD = (document.querySelector('meta[name="agent-log-build"]') || {}).content || '';
+const PAGE_BUILD_OK = !!PAGE_BUILD && PAGE_BUILD !== AL_BUILD_TOKEN;   // 只有真被注入过才算数
+// 页面文件指纹（R25 批 0）：html + /page/*.js + /page/style.css，由服务端在同一个 '/' 路由注入。
+// 服务 BUILD 管「服务端脚本换没换」，这一枚管「页面文件换没换」——拆出 /page/ 之后，改组件文件不再
+// 触碰 BUILD，只靠它拦「浏览器里是旧页面、磁盘上已是新页面文件」。同样用拼接躲全文替换。
+const PAGE_FILES_TOKEN = '__AGENT_LOG_' + 'PAGE_BUILD__';
+const PAGE_FILES_BUILD = (document.querySelector('meta[name="agent-acta-page-build"]') || {}).content || '';
+const PAGE_FILES_OK = !!PAGE_FILES_BUILD && PAGE_FILES_BUILD !== PAGE_FILES_TOKEN;
+const PAGE_SERVED = location.protocol === 'http:' || location.protocol === 'https:';
+
+const app = createApp({
+  setup() {
+    const all = ref([]);
+    // 版本错配的说明文字，'' = 正常。非空就在顶栏下面挂一条红条（见 .vm-bar）
+    const versionMismatch = ref('');
+    // 首份快照还没落地。false 之前列表区画骨架屏，而不是「暂无匹配的请求记录」——
+    // 后者会把「还在拉数据」说成「没数据」，刷新时能看见三段跳：占位图 → 暂无匹配 → 列表。
+    const booting = ref(true);
+    const agents = ref({});
+    const projects = ref({});
+    const fAgent = ref('');
+    // R10 独立多选：仅在对应单选为空（=「全部」态）时显示且有效，与 fAgent/fProject 互斥生效
+    const fAgents = ref([]);
+    const fProjects = ref([]);
+    const fSearch = ref('');
+    // ---- R33 全文搜索（候选池 I10）----
+    // 与 fSearch 是**两件事**，别合并：fSearch 是敲字就生效的客户端窗口过滤（免费、即时、只看已加载的
+    // 那些条目），这里这一组是回车才发的服务端全库检索（有成本、跨 agent、跨未加载历史、还能搜正文）。
+    // 两者共用一个输入框，但状态各存各的：搜完清掉搜索态，之前敲的字还在。
+    const searchOn = ref(false);      // 列表当前显示的是服务端命中集
+    const searchQ = ref('');          // 提交时的词（不是输入框里的实时值）
+    const searchRegex = ref(false);   // 词按正则解释（深链 re=1）
+    const searchHits = ref([]);       // 命中条目（与 /api/snapshot 的 entries 同形状，卡片零改动）
+    const searchBusy = ref(false);
+    const searchNarrow = ref(false);  // 勾上 = 只搜当前日期区间；默认**不套**时间范围（全文搜索的意义所在）
+    const searchError = ref('');
+    // 覆盖度说明：服务端 /api/search/status 的索引情况 + 本次查询的 stale/unreadable，合成横幅要的那几个数
+    const searchMeta = ref({ entries: 0, total: 0, building: false, stale: 0, unreadable: 0 });
+    const searchCapped = ref(false);  // 这一轮的命中被服务端单轮 limit 截了（横幅必须说出来，不然「命中 200 条」看着像全库就 200 条）
+    let searchSeq = 0;                // 已发出的搜索序号：连按回车时作废旧响应（同 sessSeq 的做法）
+    // 深链带来的搜索（#q=…）：restoreFromHash 只登记、不请求（那时首扫可能还没完），
+    // 由启动那一批请求里的 bootstrap 真正触发一次。
+    let pendingSearch = null;
+    const fProject = ref('');
+    // R22 时间范围：具体日期区间 ['YYYY-MM-DD','YYYY-MM-DD']（本地自然日，含两端），null = 全部时间。
+    // 和 agent / 项目一样是**服务端**收窄窗口（显式 from/to，复用 customBounds）：客户端过滤只能
+    // 在拿回来的窗口里挑，而「这两天」的条目完全可能一条都不在窗口里。
+    const fDates = ref(null);
+    const fStatus = ref('');
+    // 日期区间工具（与服务端 rangeDayStart / customBounds 同一套本地自然日口径，这里只做字符串往返）
+    const dayStrOf = t => { const d = new Date(t); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+    const todayStr = () => dayStrOf(new Date(new Date().setHours(0, 0, 0, 0)));
+    const dayStartMs = s => { const p = String(s).split('-').map(Number); return new Date(p[0], p[1] - 1, p[2]).getTime(); };
+    const dayEndMs = s => { const d = new Date(dayStartMs(s)); d.setDate(d.getDate() + 1); return d.getTime() - 1; };
+    // 默认最近 2 天（今天 + 昨天）：进入页面 / 深链没带时间参数时生效
+    const defaultRange = () => { const d = new Date(); d.setHours(0, 0, 0, 0); d.setDate(d.getDate() - 1); return [dayStrOf(d.getTime()), todayStr()]; };
+    // 旧深链符号（today/7d/30d）→ 日期区间（rangeDayStart 是共享函数，见 SHARED_JS 注入段）；
+    // 不认识的符号按「全部时间」处理（null），与服务端 rangeBounds 的保守口径一致
+    const symbolToDates = sym => {
+      const from = rangeDayStart(sym);
+      return from == null ? null : [dayStrOf(from), todayStr()];
+    };
+    const showNoLLM = ref(false); // 非 LLM 轨迹（0 token 的 workflow/skill 调用）默认隐藏
+    const fLimit = ref(200);
+    const shown = ref(200);
+    const STEP = 200;
+    const expandedId = ref(null);
+    // R21 回到顶部按钮与 .main 的滚动监听已随批 4 搬进 page/log-view.js（只服务那一棵子树；
+    // 根里的 locateEntry / collapseCard 按 id 与 closest('.card') 拿元素，不依赖这个 ref）。
+    const details = reactive({}); // id -> content | undefined(loading)
+    const live = ref(false);
+    // 扫描节奏（后端持久化，多标签页通过 settings 事件对齐）。0 = 不实时更新（暂停定时扫描）
+    const scanMs = ref(3000);
+    const scanOptions = [
+      { v: 1000, label: '每 1 秒' },
+      { v: 2000, label: '每 2 秒' },
+      { v: 3000, label: '每 3 秒（默认）' },
+      { v: 5000, label: '每 5 秒' },
+      { v: 10000, label: '每 10 秒' },
+      { v: 0, label: '不实时更新' },
+    ];
+    const paused = computed(() => !scanMs.value);
+    // 服务端首扫进度：null = 没在扫；{done,total,agent} = 正在扫。
+    // 服务端分片首扫每扫完一个 agent 让出一次事件循环，页面才连得上、才收得到这些事件。
+    const scanning = ref(null);
+    const liveText = computed(() => {
+      if (!live.value) return '重连中…';
+      // 扫描中优先：这不是「没数据」，是「正在找数据」
+      if (scanning.value) return '扫描中 ' + scanning.value.done + '/' + scanning.value.total + (scanning.value.agent ? '（' + scanning.value.agent + '）' : '');
+      return paused.value ? '已暂停' : '实时更新 · ' + (scanMs.value / 1000) + 's';
+    });
+    // 空闲自停（后端持久化，默认关）。0 = 永不退出
+    const idleExitMs = ref(0);
+    const idleOptions = [
+      { v: 0, label: '空闲自停：关（默认）' },
+      { v: 1800000, label: '空闲 30 分钟后自停' },
+      { v: 7200000, label: '空闲 2 小时后自停' },
+      { v: 21600000, label: '空闲 6 小时后自停' },
+    ];
+    const idleText = computed(() => idleExitMs.value ? '空闲 ' + (idleExitMs.value / 3600000 >= 1 ? (idleExitMs.value / 3600000) + 'h' : (idleExitMs.value / 60000) + 'min') + ' 自停' : '空闲自停关');
+    const zhCn = (typeof ElementPlusLocaleZhCn !== 'undefined') ? ElementPlusLocaleZhCn : undefined;
+    const agentsMeta = ref({}); // name -> {kind, sessions, traces, builtin}
+    // Trae 密钥按钮三态判定：kind traedb + Windows + 脚本存在 → 才显示；hasKey/traeErr 决定按钮文案与菜单项。
+    function isTraeKeyAgent(name) {
+      const m = agentsMeta.value[name];
+      return !!m && m.kind === 'traedb' && m.captureSupported === true;
+    }
+    // Cursor token 采集 hook 按钮：kind cursor 才显示。注入状态（hook.injected）由 /api/agents 带回，
+    // 所以和 trae 一样是「服务端一份真相、页面只读」——不在前端记状态，刷新/多标签页都不会说谎。
+    function isCursorHookAgent(name) {
+      const m = agentsMeta.value[name];
+      return !!m && m.kind === 'cursor';
+    }
+    const cursorHookBusy = ref('');   // 正在注入/卸载的 cursor 名（防连点 + 显示 busy 态）
+    function cursorHookState(name) {
+      const m = agentsMeta.value[name];
+      return (m && m.hook) || {};
+    }
+    // 注入 / 卸载走同一个接口（POST /api/cursor-hook，action 区分）。成功后重拉 agents 拿新的 injected。
+    async function toggleCursorHook(name) {
+      if (cursorHookBusy.value) return;
+      const injected = !!cursorHookState(name).injected;
+      const msg = injected
+        ? '卸载 token 采集 hook？会从 ~/.cursor/hooks.json 里删掉 AgentActa 那一条命令（你别的钩子不动）。'
+          + '已经采到的用量日志会保留，历史轮次的 token 照常显示。'
+        : '给 Cursor 注入 token 采集 hook？会在 ~/.cursor/hooks.json 的 stop 钩子里加一条 AgentActa 的命令'
+          + '（你原有的钩子一个都不动）。Cursor 每轮结束时调用它，把这一轮的 token 用量记到本地 ——'
+          + ' Cursor 的转录文件本身不含用量，这是本地拿到逐轮 token 的唯一途径。';
+      try {
+        await ElMessageBox.confirm(msg, injected ? '卸载 token 采集 hook' : '注入 token 采集 hook',
+          { type: injected ? 'warning' : 'info', confirmButtonText: injected ? '卸载' : '注入', cancelButtonText: '取消' });
+      } catch { return; }   // 用户取消：ElMessageBox 用 reject 表示取消，不是错误
+      cursorHookBusy.value = name;
+      try {
+        const j = await getJSON('/api/cursor-hook', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ action: injected ? 'uninstall' : 'install' }),
+        });
+        if (!j.ok) throw new Error(j.error || '操作失败');
+        ElMessage.success(injected ? '已卸载 token 采集 hook' : '已注入：去 Cursor 里发一条消息就能采到用量');
+        await loadAgents();
+      } catch (e) {
+        ElMessage.error(e.message || '操作失败');
+      } finally {
+        cursorHookBusy.value = '';
+      }
+    }
+
+    // ----- 添加 agent（R25 批 1 起是 page/dialog-add-agent.js 组件）-----
+    // 根只留开关与「加完重拉」：表单、错误、逐条试过的路径、POST 都在组件里。
+    const addVisible = ref(false);
+    const toggleLoading = ref('');   // 正在切换启停的 agent 名（防连点）
+    const traeBusy = ref('');        // 正在进行抓取的 trae 名（防连点 + 显示 busy 态）
+    const capped = ref(false);       // all 是否已触达前端上限被截断
+    const rangeTotal = ref(0);       // 当前筛选范围（agent/项目/时间）内的条目总数，服务端给，可能大于拿回来的条数
+    const MAX_ALL = 5000;            // 前端内存上限（超出丢最旧，只保留最近 5000 条）
+    const liveIds = ref(new Set());  // 进行中的轮（最后一条），SSE update 到达时自动重取详情
+    const fullIds = ref(new Set());  // 已请求过完整内容的详情（不再回退到截断版）
+    let appliedSeq = 0;              // 已应用的 SSE seq，乱序保护
+
+    // 工具 JSON 折叠开关：key = id:i:in|out（会话级 Set，展开详情时自然重建）
+    const toolJsonFold = ref(new Set());
+    function toggleJsonFold(id, i, which) {
+      const s = new Set(toolJsonFold.value);
+      const k = id + ':' + i + ':' + which;
+      s.has(k) ? s.delete(k) : s.add(k);
+      toolJsonFold.value = s;
+    }
+    // 「LLM 调用明细」里每一次调用自己的正文（key = id:序号，卡片与会话详情各记一份）。
+    // ⚠ 极性**与 toolJsonFold 相反**：这里 has() = 已展开。工具入参/返回默认展开（就那么几段），
+    // 而一轮的调用明细可能有 73 条，默认全展开等于一屏全是正文，那表就没法看了。
+    const callOpen = ref(new Set());
+    function toggleCallOut(id, i) {
+      const s = new Set(callOpen.value);
+      const k = id + ':' + i;
+      s.has(k) ? s.delete(k) : s.add(k);
+      callOpen.value = s;
+    }
+
+    // R8 时延分析（最慢轮 TopN + p50/p95）的数据与请求都在 page/dialog-stats.js 里，
+    // 根只接它报上来的「定位这一条」——因为要找的条目、展开态、滚动都在主列表这边。
+    // 点最慢排行行 → 关统计框 → 在主列表里找到该条目并展开（不在当前窗口时提示）。
+    // 走 toggle 而非直接赋值 expandedId：详情懒加载挂在 toggle 里，只设 id 会一直停在骨架屏。
+    function locateEntry(id) {
+      statsVisible.value = false;
+      // R33：判的是**当前生效的那份列表**。搜索态下列表是服务端命中集，拿 all 去判会一律报
+      // 「不在当前窗口内」—— 而恰恰是搜索命中之后跳转最需要能用。
+      // 另有「条/页」这一层：命中集可能几千条，只有前 shown 条真的渲染了卡片，滑出视口的那些
+      // DOM 上并不存在，所以这里同时把 shown 提到该条之前，否则 scrollIntoView 拿不到元素。
+      const src = searchOn.value ? searchHits.value : all.value;
+      const idx = src.findIndex(e => e.id === id);
+      if (idx < 0) {
+        ElMessage.warning(searchOn.value
+          ? '该条目不在本次搜索结果里（可清除搜索后重试）'
+          : '该条目不在当前窗口内（可调大「条/页」或收窄时间范围后重试）');
+        return;
+      }
+      if (idx >= shown.value) shown.value = Math.ceil((idx + 1) / STEP) * STEP;
+      if (expandedId.value !== id) toggle(id);
+      nextTick(() => document.getElementById('card-' + id)?.scrollIntoView({ block: 'center' }));
+    }
+
+    // ---- R33 全文搜索（服务端检索，候选池 I10）----
+    // 与 fSearch 的分工：敲字 = 客户端窗口过滤（免费、即时）；回车 = 这里，发一次服务端全库检索。
+    // 搜索**尊重 agent / 项目 / 状态筛选，但默认不套时间范围** —— 这正是全文搜索存在的理由
+    //（「上周那次报错」多半在默认的最近两天之外）。想收窄就勾横幅上的「限定当前时间范围」。
+    // qOverride：勾「限定时间范围」时按**已提交的词**重搜，而不是输入框里那个可能被改过的实时值。
+    async function runSearch(qOverride) {
+      const q = String(qOverride != null ? qOverride : (fSearch.value || '')).trim();
+      if (!q) { clearSearch(); return; }
+      const seq = ++searchSeq;
+      searchBusy.value = true; searchError.value = '';
+      try {
+        const p = new URLSearchParams();
+        p.set('q', q);
+        if (searchRegex.value) p.set('re', '1');
+        // 与 snapUrl 同源的筛选口径（多选键 agents=/projects=，单选优先）
+        if (fAgent.value) p.set('agent', fAgent.value);
+        else if (fAgents.value.length) p.set('agents', fAgents.value.join(','));
+        if (fProject.value) p.set('project', fProject.value);
+        else if (fProjects.value.length) p.set('projects', fProjects.value.join(','));
+        if (fStatus.value) p.set('status', fStatus.value);
+        // 时间范围**只在勾了收窄时**才带上；不带 = 服务端不加时间条件（filterEntries 的 customBounds 为 null）
+        if (searchNarrow.value && fDates.value) { p.set('from', fDates.value[0]); p.set('to', fDates.value[1]); }
+        const j = await getJSON('/api/search?' + p.toString());
+        if (seq !== searchSeq) return;   // 连按回车：旧响应直接丢，别让它盖掉新结果
+        if (!j.ok) { searchError.value = j.error || '搜索失败'; searchOn.value = true; searchHits.value = []; searchCapped.value = false; return; }
+        searchQ.value = q;
+        searchHits.value = j.entries || [];
+        searchCapped.value = !!j.capped;   // 服务端算的是「命中数 > 这一轮的 limit」，取回来的这批是被截后的
+        searchMeta.value = {
+          entries: (j.index && j.index.entries) || 0, total: (j.index && j.index.total) || 0,
+          building: !!(j.index && j.index.building), stale: j.stale || 0, unreadable: (j.index && j.index.unreadable) || 0,
+        };
+        searchError.value = '';
+        searchOn.value = true;
+        shown.value = STEP;             // 换了数据集，条/页回到第一屏
+        expandedId.value = null;        // 旧展开态属于旧列表，留着会指向一张不在列表里的卡片
+        updateHash();
+      } catch (err) {
+        if (seq === searchSeq) { searchError.value = err.message; searchOn.value = true; searchHits.value = []; searchCapped.value = false; }
+      } finally {
+        if (seq === searchSeq) searchBusy.value = false;
+      }
+    }
+    // 清除：搜索结果整份丢掉，回到普通窗口列表。
+    // **连输入框一起清**（fSearch 也置空）。原先只清搜索态、留着输入框里的词，想着「用户还要拿它
+    // 继续在窗口里过滤」—— 实测那是个死胡同：搜的词本来就多半不在当前窗口里（这正是全文搜索的意义），
+    // 于是清完立刻显示「匹配 0 条」，看着像清除按钮坏了。清除就该把用户送回原来的样子。
+    function clearSearch() {
+      searchSeq++;                      // 作废在途响应，否则慢回来的那次会把列表又切成命中集
+      searchOn.value = false; searchHits.value = []; searchError.value = ''; searchCapped.value = false;
+      searchQ.value = ''; searchBusy.value = false;
+      fSearch.value = '';               // 同一次「返回」的一部分，见上面的理由
+      shown.value = STEP;
+      updateHash();
+    }
+    // 勾/取消「限定当前时间范围」：已搜过就直接重搜一次（否则开关看着没反应），没搜过只记状态
+    function toggleSearchNarrow(v) {
+      searchNarrow.value = !!v;
+      if (searchOn.value && searchQ.value) runSearch(searchQ.value);
+    }
+
+    // 点卡片页脚的 session → /api/session 拉会话聚合（正序轮次 + 汇总）。
+    // 轮次正文仍走 /api/entry 懒加载：点开哪轮才取哪轮，大会话不一次读爆。
+    const sessVisible = ref(false);
+    // R25 批 1：弹层里那一坨（轮次数据 / 展开态 / 逐轮详情缓存）搬进了 page/dialog-sess-timeline.js，
+    // 根只留「开哪个」这一个请求。点一次卡片页脚写一份，弹层 watch visible 起来时按它去拉。
+    const sessReq = ref(null);
+    // agent / project 是**可选**的精确化参数：session 值跨 agent、跨项目都不保证唯一
+    // （各解析器口径不同，本机实测 atomcode 就有不同项目下的同名 session）。
+    // 不传 == 老行为（只按 key 匹配），所以弹层原来的调用点不受影响。
+    function openSession(key, agent, project) {
+      if (!key) { ElMessage.warning('该条目没有会话标识'); return; }
+      // project 传**原始写法**：服务端按 projKey 两边归一后比（projKey 幂等），两种写法都能命中
+      sessReq.value = { key, agent, project };
+      sessVisible.value = true;
+    }
+
+    // ---- R6 会话视图：按会话浏览 + 逐轮逐事件轨迹（view='sess'）----
+    // 为什么单开一屏、而不是把上面那个弹层做大：轨迹要按**真实时间比例**画概览条、要看上千行事件、
+    // 还要在同一屏里来回切会话，弹层那点高度装不下。弹层保留给卡片页脚的「会话时间线」，两者数据同源。
+    const view = ref('log');            // 'log' | 'sess'
+    // 左栏：会话列表（/api/sessions；limit=500，服务端上限 2000，够一屏用）
+    const sessList = ref([]);
+    const sessListLoading = ref(false);
+    const sessListCapped = ref(false);
+    const sessListError = ref('');
+    const sessSearch = ref('');
+    const sessSort = ref('to');         // to | from | turns | dur | total（客户端排，见 sessListFiltered）
+    // 右栏：当前会话
+    const sessPick = ref(null);         // 选中的那条列表项（带 key / agent / project / projectKey / hasTimeline）
+    const sessCur = ref(null);          // /api/session 的返回：{count,tin...,from,to,models,entries[]}
+    const sessCurLoading = ref(false);
+    const sessOpen = ref(new Set());    // 已展开的轮 id（点开才拉 /api/entry）
+    const sessDetail = ref({});         // 轮 id -> /api/entry 返回（含 events）。**不复用** details：
+                                        // 那是卡片详情的缓存，混用会让两个视图互相覆盖
+    const sessFullIds = ref(new Set()); // 已按 full=1 取过的轮（截断提示据此收起）
+    const sessHi = ref('');             // 当前高亮的逐事件行 key = 轮 id + ':' + 事件下标
+    const sessCursor = ref(null);       // 概览条上的指针位置 0~1（null = 不显示）
+    let sessSeq = 0;                    // 已发出的 /api/session 序号：快速连点会话时作废旧响应
+
+    function switchView(v) {
+      if (view.value === v) return;
+      view.value = v;
+      updateHash();   // 视图也进深链（见 updateHash）
+      // 切过去时列表还是空的才拉；「已经有数据、再切回来刷新一次」交给下面 watch(view)，
+      // 两条路径互斥，任何一次切换最多发一个请求。
+      if (v === 'sess' && !sessList.value.length) loadSessions();
+    }
+
+    async function loadSessions() {
+      sessListLoading.value = true; sessListError.value = '';
+      try {
+        // 与 /api/daily、/api/models **同一套筛选口径**（agent / 项目归一化 key / 时间范围：
+        // 有日期区间传显式 from/to，否则不限），所以左侧栏一收窄，会话列表跟着收窄，页面不需要再过滤一遍。
+        const q = new URLSearchParams();
+        q.set('limit', '500');
+        if (fDates.value) { q.set('from', fDates.value[0]); q.set('to', fDates.value[1]); }
+        // R10：多选态走 agents=/projects= 合集键（与单选互斥，同 snapUrl）
+        if (fAgent.value) q.set('agent', fAgent.value);
+        else if (fAgents.value.length) q.set('agents', fAgents.value.join(','));
+        if (fProject.value) q.set('project', fProject.value);
+        else if (fProjects.value.length) q.set('projects', fProjects.value.join(','));
+        const j = await getJSON('/api/sessions?' + q.toString());
+        if (!j.ok) throw new Error(j.error || '会话列表加载失败');
+        // _sid = agent + projectKey + key：选中态必须按三者一起比 —— session 值跨 agent、跨项目都不唯一
+        sessList.value = (j.sessions || []).map(s => ({ ...s, _sid: s.agent + '\u0000' + s.projectKey + '\u0000' + s.key }));
+        sessListCapped.value = !!j.capped;
+      } catch (e) {
+        sessListError.value = '会话列表加载失败：' + e.message;
+        sessList.value = [];
+      } finally { sessListLoading.value = false; }
+    }
+
+    // 排序与搜索都在客户端做（服务端只按「最近活跃」返回一份），换排序维度不必再跑一趟。
+    const sessListFiltered = computed(() => {
+      const q = sessSearch.value.trim().toLowerCase();
+      let list = sessList.value;
+      if (q) list = list.filter(s => (s.name || '').toLowerCase().includes(q) || String(s.key).toLowerCase().includes(q)
+        || (s.project || '').toLowerCase().includes(q) || (s.agent || '').toLowerCase().includes(q)
+        || modelText(s.models).toLowerCase().includes(q));
+      const k = sessSort.value;
+      const cmp = k === 'from' ? (a, b) => (a.from || 0) - (b.from || 0)
+        : k === 'turns' ? (a, b) => (b.turns || 0) - (a.turns || 0)
+          : k === 'dur' ? (a, b) => (b.dur || 0) - (a.dur || 0)
+            : k === 'total' ? (a, b) => (b.total || 0) - (a.total || 0)
+              : (a, b) => (b.to || 0) - (a.to || 0);
+      return [...list].sort(cmp);
+    });
+
+    // 加载一个会话：三个参数都传。只按 key 匹配会把同一 agent 下不同项目的同名会话并成一个
+    // （服务端 sessionAgg 的可选收窄就是为这个加的）。
+    async function pickSession(s) {
+      const my = ++sessSeq;
+      sessPick.value = s;
+      sessCurLoading.value = true; sessCur.value = null;
+      sessOpen.value = new Set(); sessDetail.value = {}; sessFullIds.value = new Set();
+      sessHi.value = ''; sessCursor.value = null;
+      try {
+        const j = await getJSON('/api/session?key=' + encodeURIComponent(s.key)
+          + '&agent=' + encodeURIComponent(s.agent)
+          + '&project=' + encodeURIComponent(s.projectKey || ''));
+        if (my !== sessSeq) return;                      // 又点了别的会话，这份响应作废
+        if (!j.ok) throw new Error(j.error || '会话加载失败');
+        sessCur.value = j;
+      } catch (e) {
+        if (my !== sessSeq) return;
+        sessCur.value = null;
+        ElMessage.error('会话加载失败：' + e.message);
+      } finally { if (my === sessSeq) sessCurLoading.value = false; }
+    }
+
+    // I16 子 agent 拓扑：从「父会话 / 子 agent」那两条链接跳过去。
+    // 传的是一个**会话 key**（不是列表项），所以 agent / project 从当前这一屏拿 —— session 值跨
+    // agent、跨项目都不唯一（server 的聚合键就带着这两维），只按 key 打开会跳错人。
+    // 优先复用列表里那一项（能连带把左栏选中态对上）；列表里没有（父会话被时间范围筛掉了）时
+    // 就拿当前会话的 agent/projectKey 兜一个最小项出来 —— 跳过去仍能看，只是左栏不一定高亮。
+    function openSessionByKey(key) {
+      if (!key) return;
+      const k = String(key);
+      const hit = sessList.value.find(s => s.key === k && s.agent === (sessPick.value && sessPick.value.agent)
+        && s.projectKey === (sessPick.value && sessPick.value.projectKey));
+      if (hit) return pickSession(hit);
+      const c = sessCur.value;
+      if (!c) return;
+      pickSession({
+        key: k, agent: c.agent || (sessPick.value && sessPick.value.agent) || '',
+        project: c.project || '', projectKey: c.projectKey || '', name: null,
+        _sid: (c.agent || '') + '\u0000' + (c.projectKey || '') + '\u0000' + k,
+      });
+    }
+
+    // 展开 / 折叠一轮。forceOpen = 从概览条点过来的「定位」：已经展开就只滚动，不把它又折回去。
+    const scrollToTurn = id => { const el = document.getElementById('sv-turn-' + id); if (el) el.scrollIntoView({ block: 'start' }); };
+    async function sessToggleTurn(tk, forceOpen) {
+      const id = typeof tk === 'string' ? tk : (tk && tk.id);
+      if (!id) return;
+      const s = new Set(sessOpen.value);
+      if (s.has(id)) { if (!forceOpen) s.delete(id); }
+      else s.add(id);
+      sessOpen.value = s;
+      if (forceOpen) nextTick(() => scrollToTurn(id));
+      if (s.has(id) && !sessDetail.value[id]) {
+        try {
+          sessDetail.value = { ...sessDetail.value, [id]: prepDetail(await fetchDetail(id, false)) };
+          // 详情到位后**再滚一次**：上面那次滚的时候这一轮还只是骨架屏，等高线完全不同
+          // （实测：从概览条点过来时展开是对的、指针也对，但 pane 的 scrollTop 还是 0，
+          //  而该轮已经落到 350px 处、内容涨到 8363px —— 等于「跳过去了」但没跳）。
+          if (forceOpen) { await nextTick(); scrollToTurn(id); }
+        }
+        catch (e) { ElMessage.error('详情加载失败：' + e.message); }
+      }
+    }
+
+    // 点某条事件：高亮它，并把概览条的指针移到它的时间位置上（与概览条的 pctOf 同一套换算）。
+    function sessEventClick(tk, row) {
+      sessHi.value = row.key;
+      const sp = sessSpan.value;
+      if (sp) sessCursor.value = Math.max(0, Math.min(1, ((row.ev.t || 0) - sp.from) / (sp.to - sp.from)));
+    }
+
+    // 点概览条：按点击位置反算时间 → 选时间上最近的一轮 → 展开并滚过去。
+    // 这里的 f 与 pctOf 是**同一套映射**（pctOf 给 0~100，f = pctOf/100）：对不上的话，
+    // 看上去落在那一段、点下去却跳到别处。
+    function sessOvClick(ev) {
+      const sp = sessSpan.value, c = sessCur.value;
+      if (!sp || !c) return;
+      const r = ev.currentTarget.getBoundingClientRect();
+      const f = r.width ? Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) : 0;
+      sessCursor.value = f;      // 指针跟手
+      sessHi.value = '';         // 这里选中的是「一轮」，不是某条事件，事件高亮让位
+      const t = sp.from + f * (sp.to - sp.from);
+      let best = null, bd = Infinity;
+      for (const e of c.entries) {
+        const a = e.time || 0, b = a + (e.dur || 0);
+        const d = t < a ? a - t : (t > b ? t - b : 0);   // 落在两轮之间的空档里也算距离
+        if (d < bd) { bd = d; best = e; }
+      }
+      if (best) sessToggleTurn(best.id, true);
+    }
+
+    // 会话详情里的「查看完整内容」：写进 sessDetail。
+    // **不能**直接复用 loadFull(id) —— 那个写的是卡片缓存 details，会话视图读不到，点了等于没点。
+    async function sessLoadFull(id) {
+      if (sessFullIds.value.has(id)) return;
+      sessFullIds.value = new Set(sessFullIds.value).add(id);
+      try { sessDetail.value = { ...sessDetail.value, [id]: prepDetail(await fetchDetail(id, true)) }; }
+      catch (e) { ElMessage.error('加载完整内容失败：' + e.message); }
+    }
+
+    // 概览条的横轴 = 会话的 [from, to]，宽度 = **真实时间占比**（不给任何段画等宽）。
+    // ⚠ 概览条、逐事件行、点击定位**必须共用同一个 pctOf 换算**：视觉落点与点击反算走的是一套映射，
+    // 两处各写一份的话，看上去在那一段、点下去却跳到别处。
+    const sessSpan = computed(() => {
+      const c = sessCur.value;
+      if (!c || !c.entries || !c.entries.length) return null;
+      const from = c.from;
+      // 右端取「最后一轮的**结束**」，而不是服务端给的 to ——
+      // 服务端的 to = max(轮.time)，也就是**最后一轮的起点**，于是最后一轮的 [time, time+dur]
+      // 天生就越过右端：pctOf 会把它的终点夹成 100，段宽只剩可见下限 0.4%（~5px）。
+      // 结果是**不管最后一轮实际跑了 5 秒还是 5 分钟，图上都是右端一根细条** ——
+      // 跟它 tooltip 里的真实耗时自相矛盾，而这条轴的全部意义就是「谁占了多少时间」。
+      // 只在这里把**作图的**跨度补到真实结束；**不动服务端口径**（to 还要给会话列表按「最近活跃」排序）。
+      let to = c.to;
+      for (const e of c.entries) to = Math.max(to, (e.time || 0) + (e.dur || 0));
+      if (!(to > from)) return null;   // 单轮 / 同一毫秒：没有横向跨度可画，整条概览条不画
+      return { from, to };
+    });
+    // 汇总条与轴刻度上的「起止」跟作图跨度用**同一个数**，否则会出现「标题写 14:34、轴右端写 14:39」
+    // 这种自己跟自己打架的显示。sessSpan 不可画（单轮 / 同一毫秒）时退回服务端的 from/to。
+    const sessFrom = computed(() => (sessSpan.value ? sessSpan.value.from : ((sessCur.value || {}).from || 0)));
+    const sessTo = computed(() => (sessSpan.value ? sessSpan.value.to : ((sessCur.value || {}).to || 0)));
+    const pctOf = t => {
+      const sp = sessSpan.value;
+      if (!sp) return 0;
+      return Math.max(0, Math.min(100, ((t || 0) - sp.from) / (sp.to - sp.from) * 100));
+    };
+    // 段位：位置与宽度都由真实时间装出来，只做两件不改变比例的事 ——
+    //   1) 段宽给一个可见下限（零耗时的段在 100% 宽度里就是一根看不见的空气，同 .st-seg.hit 的 3px 下限）；
+    //   2) 把整段收进 [0,100]。**这一条是必需的，不是修饰**：服务端的会话 to = max(轮.time)，
+    //      也就是**最后一轮的起点**，所以最后一轮（以及它里面最后那次调用）的起点正好等于轴的右端，
+    //      不收的话 left:100% 会被容器的 overflow:hidden 整段裁掉 —— 每次都会发生。
+    const segOf = (t0, t1, minW) => {
+      const left0 = pctOf(t0);
+      const width = Math.max(pctOf(t1) - left0, minW);
+      return { left: (left0 + width > 100) ? Math.max(0, 100 - width) : left0, width };
+    };
+    // 背景轨：一轮一段。所有轮都有真实的 time / dur，与是否展开过无关。
+    // 轮与轮之间的挂机空档就真的是空的（位置由时间决定，不等分）。
+    const sessOvTurns = computed(() => {
+      const c = sessCur.value;
+      if (!c || !sessSpan.value) return [];
+      return c.entries.map((e, i) => {
+        const { left, width } = segOf(e.time, (e.time || 0) + (e.dur || 0), 0.4);
+        return {
+          id: e.id, left, width, err: e.status !== 'ok', mgap: width >= 1,
+          tip: '#' + (i + 1) + '　' + fmtTime(e.time) + '　' + fmtDur(e.dur) + (e.preview ? '\n' + e.preview : ''),
+        };
+      });
+    });
+    // 前景轨：只画**已经展开取过 events 的轮**（其余轮没有逐事件时间，画不出来也不该猜）。
+    // llm 拆成「等待(ttft)」与「解码(dur)」两段；工具画 call→result 的真实区间
+    // （result.dur = 服务端算的 结果时刻 − 发起时刻）。
+    // ttft/dur 为 0（失败调用、配不上的 result）时落一根斜纹记号：不画 0 宽空气、也不编造时长。
+    const sessOvEvents = computed(() => {
+      const c = sessCur.value;
+      if (!c || !sessSpan.value) return [];
+      const out = [];
+      for (const e of c.entries) {
+        const evs = sessEvIndex.value[e.id];
+        if (!evs) continue;
+        let open = null;   // 当前打开的 call，等它的 result 来配对
+        for (const v of evs) {
+          if (v.k === 'llm') {
+            const t0 = v.t || e.time, w = v.ttft || 0, d = v.dur || 0;
+            if (w) { const g = segOf(t0, (t0 || 0) + w, 0.3); out.push({ cls: 'wait', left: g.left, width: g.width, mgap: false, tip: 'TTFT 等待 ' + w + 'ms（排队 + prefill）' }); }
+            if (d) { const g = segOf((t0 || 0) + w, (t0 || 0) + w + d, 0.3); out.push({ cls: 'llm', left: g.left, width: g.width, mgap: w > 0, tip: '解码 ' + d + 'ms' }); }
+            if (!w && !d) { const g = segOf(t0, t0, 0.4); out.push({ cls: 'zero', left: g.left, width: g.width, mgap: false, tip: '这次调用没有流式时间戳（ttft / decode 都是 0），只标一个位置' }); }
+          } else if (v.k === 'call') {
+            open = { t0: v.t || e.time };
+          } else if (v.k === 'result') {
+            if (!open) continue;
+            const t0 = open.t0;
+            if (v.dur) {
+              const g = segOf(t0, (t0 || 0) + v.dur, 0.3);
+              out.push({ cls: v.error ? 'tool err' : 'tool', left: g.left, width: g.width, mgap: true, tip: '工具 ' + fmtDur(v.dur) + (v.error ? '（失败）' : '') });
+            } else {
+              const g = segOf(v.t || t0, v.t || t0, 0.4);
+              out.push({ cls: 'zero', left: g.left, width: g.width, mgap: false, tip: '这次工具调用没有可配对的真实耗时（dur=0），只标一个位置' });
+            }
+            open = null;
+          }
+        }
+      }
+      return out;
+    });
+    // ---------------- 逐轮用量图 ----------------
+    // 模式由**数据**决定，不按 agent 名硬编码：
+    //   qoder 模式 —— 任一轮带 credits（qoder 的 token 恒为 0，积分与上下文占比才是真信号，
+    //     见 emitClaudeTurns）：积分柱 + 上下文占比折线（分母=1，不用再查窗口表）；
+    //   token 模式 —— 有非 0 的 token/耗时：「缓存+输入+输出」堆叠柱 + **一根线**，画哪根同样看数据：
+    //     会话里只要有任意一轮拿得到窗口容量（e.ctx），线就是**上下文占用率**（ctxUsed ÷ 窗口，
+    //     0–100 绝对刻度、顶格＝满窗）—— 柱高读的是「这轮比别的轮猛多少」，读不出「离阈值还有多远」，
+    //     两者各有尺；一根都没有（kimi / gemini / workbuddy 这类缺分母的）退回画**耗时折线**（按本会话峰值归一），
+    //     占用只留在 tooltip 里。耗时退到 tooltip 不是删信息：轮头那列一直有它。
+    //   压缩红点 —— 两种模式同一画法：谁落了 compacts 就点谁（不再 qoder 专属），高度落在该轮占用率上；
+    //     拿不到分母时落基线并画成空心（bare），只回答「这轮压过」，不带占比含义。
+    //   全 0（cursor 这类源头就没有用量，连时间戳都没有）—— null，整块不渲染。
+    // 柱高按本图内最大值归一；耗时线为 0 的会话（拿不到耗时）不画线，别贴一条假直线在底部。
+    const sessChartOpen = ref(true);
+    const sessChart = computed(() => {
+      const c = sessCur.value;
+      if (!c || !c.entries || !c.entries.length) return null;
+      const es = c.entries;
+      const qoder = es.some(e => e.credits != null);
+      if (!qoder && !es.some(e => (e.tin || 0) + (e.tout || 0) + (e.tcache || 0) + (e.dur || 0) > 0)) return null;
+      const N = es.length;
+      const x = i => ((i + 0.5) / N * 100).toFixed(3);   // 列中心，与 flex 等分列严格对齐（见 .sv-chart 注释）
+      const tickEvery = Math.max(1, Math.ceil(N / 12));
+      // 该轮的上下文占用率（0–1）；null = 没有分母，只能画占用、画不出百分比（与卡片同一口径）
+      const ratio = qoder
+        ? e => (e.ctxRatio > 0 ? Math.min(1, e.ctxRatio) : null)
+        : e => (e.ctx > 0 ? Math.min(1, ctxUsed(e) / e.ctx) : null);
+      // I12 压缩画像（2026-09-28）：tooltip 一行说清「压了几次、自动还是手动、前后 token、
+      // 一共丢了多少、等了多久」。compDrop 只有 claude 源有 ⇒ 没有这一位就不说这句，
+      // 绝不补一个 0（qoder 会被读成「压过、却一个 token 都没丢」）。
+      const compTip = e => {
+        if (!e.compacts) return '';
+        const tg = (e.compAuto || e.compManual)
+          ? '（' + (e.compAuto ? '自动 ' + e.compAuto : '') + (e.compManual ? (e.compAuto ? ' / ' : '') + '手动 ' + e.compManual : '') + '）'
+          : '';
+        let s = '\n压缩 ×' + e.compacts + tg;
+        if (e.compPre) s += '（' + fmtN(e.compPre) + ' → ' + fmtN(e.compPost) + ' tok）';
+        if (e.compDrop) s += '　丢 ' + fmtN(e.compDrop) + ' tok';
+        if (e.compMs) s += '　等 ' + fmtDur(e.compMs);
+        return s;
+      };
+      const mark = (e, r) => e.compacts ? { y: r == null ? 0 : r * 100, bare: r == null } : null;
+      const hasMark = es.some(e => e.compacts);
+      // 会话级压缩小结（I12）：逐轮累加，回答「这个会话一共压掉多少 / 等了多久」。
+      // 一个都没压过就是 null，sess-view 那一行整个不出现（不印「压缩 0 次」）。
+      const comp = (() => {
+        let n = 0, drop = 0, ms = 0, auto = 0, manual = 0;
+        for (const e of es) {
+          if (!e.compacts) continue;
+          n += e.compacts; auto += e.compAuto || 0; manual += e.compManual || 0;
+          drop += e.compDrop || 0; ms += e.compMs || 0;
+        }
+        return n ? { n, drop, ms, auto, manual } : null;
+      })();
+      if (qoder) {
+        const maxCr = Math.max(1e-9, ...es.map(e => e.credits || 0));
+        const rows = es.map((e, i) => {
+          const cr = e.credits || 0, r = ratio(e);
+          return {
+            id: e.id,
+            stack: cr > 0 ? [{ h: Math.max(1.5, cr / maxCr * 100), c: 'var(--s-out)' }] : [],
+            mark: mark(e, r),
+            tip: '#' + (i + 1) + '　' + fmtTime(e.time) + '\n积分 ' + fmtCredits(cr) + '　上下文占比 ' + fmtPct(e.ctxRatio)
+              + compTip(e) + (e.dur ? '\n耗时 ' + fmtDur(e.dur) : ''),
+          };
+        });
+        const linePts = es.map((e, i) => x(i) + ',' + (100 - Math.min(100, (e.ctxRatio || 0) * 100)).toFixed(2)).join(' ');
+        return { mode: 'qoder', rows, segs: [linePts], lineColor: 'var(--s-in)', hasMark, tickEvery, comp };
+      }
+      const maxTok = Math.max(1, ...es.map(e => (e.tin || 0) + (e.tout || 0) + (e.tcache || 0)));
+      const maxDur = Math.max(0, ...es.map(e => e.dur || 0));
+      const win = es.some(e => e.ctx > 0);            // 有任何一轮带窗口容量，才谈得上「÷ 窗口」这条线
+      const winMax = Math.max(0, ...es.map(e => e.ctx || 0));
+      const rows = es.map((e, i) => {
+        const tot = (e.tin || 0) + (e.tout || 0) + (e.tcache || 0);
+        const p = v => v > 0 ? Math.max(1.5, v / maxTok * 100) : 0;
+        const stack = [];
+        if (e.tcache) stack.push({ h: p(e.tcache), c: 'var(--s-cache)' });
+        if (e.tin) stack.push({ h: p(e.tin), c: 'var(--s-in)' });
+        if (e.tout) stack.push({ h: p(e.tout), c: 'var(--s-out)' });
+        const cu = ctxUsed(e);
+        return {
+          id: e.id, stack, mark: mark(e, ratio(e)),
+          tip: '#' + (i + 1) + '　' + fmtTime(e.time) + '\n输入 ' + fmtN(e.tin) + ' · 输出 ' + fmtN(e.tout) + ' · 缓存 ' + fmtN(e.tcache) + '（合计 ' + fmtN(tot) + '）'
+            + '\n耗时 ' + fmtDur(e.dur) + compTip(e)
+            + (cu ? '\n上下文占用 ' + fmtN(cu) + (e.ctx ? ' / ' + fmtN(e.ctx) + '（' + ctxPct(e) + '%）' : '') : ''),
+        };
+      });
+      // 占用率线**按连续有分母的轮分段**：断点处宁可断开，也不把线连到一个根本没有窗口的轮上。
+      // 单点不成线（一根孤零零的点是画不出「趋势」的），所以长度 < 2 的段直接丢。
+      let segs = [];
+      if (win) {
+        let run = [];
+        for (let i = 0; i <= N; i++) {
+          const r = i < N ? ratio(es[i]) : null;
+          if (r == null) { if (run.length > 1) segs.push(run.join(' ')); run = []; continue; }
+          run.push(x(i) + ',' + (100 - r * 100).toFixed(2));
+        }
+      } else if (maxDur > 0) {
+        segs = [es.map((e, i) => x(i) + ',' + (100 - (e.dur || 0) / maxDur * 100).toFixed(2)).join(' ')];
+      }
+      const note = win && segs.length
+        ? '绿线＝上下文占用率（该轮结束时占用 ÷ 窗口 ' + fmtN(winMax) + '，顶格＝满窗）'
+          + (es.some(e => e.ctxTbl) ? '；这个窗口值来自「上下文窗口」查表，不是日志给的，表里填错曲线就跟着错' : '')
+          + '；柱子按本会话最大那轮归一，与线不是同一把尺'
+        : '';
+      return { mode: 'token', rows, segs, lineColor: 'var(--green)', hasMark, tickEvery, lineKind: win ? 'ctx' : 'dur', note, comp };
+    });
+    // 点柱子 = 定位并展开那一轮（与概览条 sessOvClick 同一语义：已展开就只滚动，不折回去）
+    function sessChartGo(id) { sessToggleTurn(id, true); }
+
+    // 轮详情底部的「收起」：与卡片的 collapseCard 同款 —— 折叠这一轮并把轮头滚回视野
+    // （详情可能有十几屏高，收起后滚动位置会停在别处；等 DOM 变矮再量，否则算的是收起前的高度）。
+    async function sessCollapseTurn(id, ev) {
+      const turn = ev && ev.target && ev.target.closest ? ev.target.closest('.sess-turn') : null;
+      const s = new Set(sessOpen.value);
+      s.delete(id);
+      sessOpen.value = s;
+      await nextTick();
+      if (turn) turn.scrollIntoView({ block: 'nearest' });
+    }
+
+    // 轮 id -> 该轮已加载的 events[]（只含展开过、且确实有逐事件的轮）
+    const sessEvIndex = computed(() => {
+      const o = {};
+      for (const id of sessOpen.value) {
+        const d = sessDetail.value[id];
+        if (d && d.events && d.events.length) o[id] = d.events;
+      }
+      return o;
+    });
+    // 逐事件的行模型：时间偏移 / 标签 / 摘要 / 迷你条宽度都在这里一次算好。
+    // 不在模板里逐个算 —— 那种写法每次重渲染都会把整表重算一遍（同 secs 的注释）。
+    const EV_LABEL = { user: '用户输入', sys: '系统注入', step: '步骤', llm: '模型调用', call: '工具调用', result: '工具返回', end: '本轮结束' };
+    const sessEvRows = computed(() => {
+      const out = {};
+      const c = sessCur.value;
+      if (!c) return out;
+      for (const tk of c.entries) {
+        const d = sessDetail.value[tk.id];
+        const evs = (d && d.events) || null;
+        if (!evs || !evs.length) continue;
+        // 迷你条的归一分母 = 该轮 LLM 调用里最长的那次（等待 + 解码），所以同一轮内各次调用可比，
+        // 又不会被别的轮的巨型调用压成一条线。
+        let den = 0;
+        for (const v of evs) if (v.k === 'llm') den = Math.max(den, (v.ttft || 0) + (v.dur || 0));
+        out[tk.id] = evs.map((v, j) => {
+          const row = {
+            key: tk.id + ':' + j, k: v.k, ev: v, label: EV_LABEL[v.k] || v.k, sub: '',
+            bar: null, zero: false, err: false, tool: null,
+            rel: '+' + Math.max(0, (v.t || 0) - (tk.time || 0)) + 'ms',
+          };
+          if (v.k === 'llm') {
+            const w = v.ttft || 0, dd = v.dur || 0;
+            row.bar = { w: den ? w / den * 100 : 0, d: den ? dd / den * 100 : 0 };
+            row.zero = !w && !dd;    // 失败调用（err:true）常常两个都是 0：画占位 + 文案里的「?」
+            row.err = !!v.err;
+            row.sub = (v.model || '(未知模型)') + ' · ↑' + fmtN(v.tin) + ' ↓' + fmtN(v.tout)
+              + (v.tcache ? ' · 缓存 ' + fmtN(v.tcache) : '')
+              + (v.blocks && v.blocks.length ? ' · ' + v.blocks.join(' / ') : '')
+              + (row.err ? ' · 调用失败' : '');
+          } else if (v.k === 'user') {
+            row.sub = '（正文见下方「用户输入」）';
+          } else if (v.k === 'sys') {
+            row.sub = '系统提示注入 · ' + (v.len || 0).toLocaleString() + ' 字符（轨迹里只记长度，不存正文）';
+          } else if (v.k === 'step') {
+            row.sub = (v.n == null ? '' : '第 ' + v.n + ' 步 · ') + (v.ph === 'end' ? '结束' : '开始');
+          } else if (v.k === 'call') {
+            row.tool = (v.i >= 0 && d.tools) ? (d.tools[v.i] || null) : null;
+            row.sub = (v.name || '?') + (v.i >= 0 ? ' · #' + (v.i + 1) : ' · 配不到 tools 下标') + '（点开看入参）';
+          } else if (v.k === 'result') {
+            row.tool = (v.i >= 0 && d.tools) ? (d.tools[v.i] || null) : null;
+            row.err = !!v.error;
+            row.sub = (v.error ? '返回失败 · ' : '返回 · ')
+              + (v.dur ? fmtDur(v.dur) : '耗时不可得（配不上调用或 dur=0）')
+              + (v.i >= 0 ? ' · #' + (v.i + 1) : '') + '（点开看返回）';
+          } else if (v.k === 'end') {
+            row.sub = '原因：' + (v.reason || '—');
+          }
+          return row;
+        });
+      }
+      return out;
+    });
+
+    // 服务端的 hasTimeline 是**能力声明**、不是探测（见 server 里 EVENT_AGENTS 的注释）：万一某个 agent
+    // 的解析器后来也产出了 events、而那份名单没跟着更新，就会自相矛盾 ——「上面写着没有时间轴，下面却在画轨迹」。
+    // 这条自纠正让页面以**事实**为准：只要真加载到了 events，那条告警就不显示。
+    // （反方向是安全的：不在 EVENT_AGENTS 的 agent 永远加载不到 events，告警照常显示。）
+    const sessHasEvents = computed(() => Object.keys(sessEvRows.value).length > 0);
+
+    // 会话列表跟着左侧筛选走：在会话视图里改 agent / 项目 / 时间范围，列表必须跟着收窄
+    // （服务端 /api/sessions 与 /api/daily 同口径，传的就是这三个参数）。
+    // 只在会话视图里重拉：日志视图下改筛选由 loadSnapshot 负责，这里再拉一次纯属浪费。
+    watch([fAgent, fProject, fDates], () => { if (view.value === 'sess') loadSessions(); });
+    // 切回会话视图时刷新一次（列表已经有数据才走到这里；第一次切过去由 switchView 拉，两条路径互斥）
+    watch(view, () => { if (view.value === 'sess' && sessList.value.length) loadSessions(); });
+    // 无模型条目的标题：trace 显示轨迹名；codebuddy/workbuddy 显示 ai-title 会话标题；
+    // 旧格式无统计；claude 未收到回复的轮显示进行中
+    const titleOf = e => {
+      const mt = modelText(e.models);
+      if (mt) return mt;
+      if (e.name) return e.name;
+      if (e.nollm) return '(非 LLM 调用)';
+      if (e.legacy) return '(旧格式 · 无统计)';
+      if (e.aborted) return '(已打断)';
+      if (e.agent === 'claude' && !e.calls && isLive(e.id)) return '(进行中)';
+      return '(无模型信息)';
+    };
+
+    const detailOf = id => details[id];
+
+    // 项目名归一化（projNorm / projKey）与时间窗口起点（rangeDayStart）**不在本文件里** ——
+    // 唯一来源是 agent-acta-server.mjs 的 SHARED_JS，服务端在 GET / 时注入（见上方「跨端共享片段」）。
+    // 同一个项目被各家 agent 写成不同样子——claude/atomcode/codex 写 F:\centos\next-admin，
+    // codebuddy/gemini 写小写盘符，cursor 只有 slug f-centos-next-admin（盘符和分隔符都退化成 -，反推不回来）。
+    // 归一**只作用在「项目」这个筛选维度**：条目上的 project 一个字节都不改，卡片页脚照旧显示真实来源。
+    // ⚠️ 想改口径只改服务端那份，两端同时生效；在本文件里重新定义同名函数 = 回退漂移，
+    //    test/shared-snippet-test.mjs 会拦。
+
+    // 时间范围判定：页面只在「直播增量该不该进当前窗口」这一处用它 —— 真正的过滤在服务端
+    // （传显式 from/to，边界由服务端现算，与这里同一套本地自然日口径，挂过午夜也不会两端各算各的）。
+    const rangeTest = t => {
+      const d = fDates.value;   // null = 全部时间（不限）
+      if (!d) return true;
+      return (t || 0) >= dayStartMs(d[0]) && (t || 0) <= dayEndMs(d[1]);
+    };
+
+    const filtered = computed(() => {
+      const q = fSearch.value.toLowerCase();
+      // R33：搜索态下列表显示的是**服务端的命中集**，不是窗口条目。
+      //   · 不再重跑下面那段客户端关键词匹配：服务端已经按同一个词匹配过了（而且它连正文都搜了），
+      //     再用只认 preview/会话/模型 的窄口径筛一遍，会把「命中的是 AI 回复正文」的条目全滤掉 ——
+      //     症状是「横幅写着命中 30 条、列表空的」。
+      //   · 但**非 LLM 轨迹**这个开关照旧生效：它是显示偏好，与服务端怎么匹配无关。
+      //   · agent/项目/状态也不再重筛：服务端那套就是同一套口径（同一份 filterEntries），重筛是白做。
+      const src = searchOn.value ? searchHits.value : all.value;
+      return src.filter(e => {
+        if (!showNoLLM.value && e.nollm) return false;
+        // R9「只看异常」：优先于一切其它筛选，只留命中集合里的条目（定位/核实时用，常跟搜索搭配）
+        if (alertOnly.value && !alertHits.value.has(e.id)) return false;
+        if (searchOn.value) return true;
+        if (fAgent.value && e.agent !== fAgent.value) return false;
+        if (!fAgent.value && fAgents.value.length && !fAgents.value.includes(e.agent)) return false; // R10 多选合集
+        if (fProject.value && projKey(e.project) !== fProject.value) return false; // 选中一组 = 该项目的所有写法
+        if (!fProject.value && fProjects.value.length && !fProjects.value.includes(projKey(e.project))) return false; // R10 多选合集
+        if (fStatus.value && e.status !== fStatus.value) return false;
+        if (q && !((e.preview||'').toLowerCase().includes(q) || (e.session||'').toLowerCase().includes(q)
+          || modelText(e.models).toLowerCase().includes(q) || (e.project||'').toLowerCase().includes(q))) return false;
+        return true;
+      });
+    });
+    // 项目下拉按归一化后的项目分组（projKey 见上）
+    const projectGroups = computed(() => {
+      const g = new Map();
+      for (const [name, cnt] of Object.entries(projects.value)) {
+        const k = projKey(name);
+        let o = g.get(k);
+        if (!o) { o = { key: k, names: [], count: 0, label: name, best: -1 }; g.set(k, o); }
+        o.names.push(name);
+        o.count += cnt;
+        // 显示名取条目最多的那个写法（并列取字典序小的，保证每次算出来一致）
+        if (cnt > o.best || (cnt === o.best && name < o.label)) { o.best = cnt; o.label = name; }
+      }
+      return [...g.values()].sort((a, b) => a.label.localeCompare(b.label));
+    });
+    const visible = computed(() => filtered.value.slice(0, shown.value));
+    // R5：当前窗口内的失败条数（不受状态筛选影响，作为「失败 N 条」入口的计数）
+    const failCount = computed(() => all.value.filter(e => e.status !== 'ok').length);
+    // 曾经这里有一条「计数写着有 N 条、但都早于当前加载的窗口」的提示。
+    // 现在 agent / 项目两个维度都在**服务端**把窗口收窄了（见 snapUrl），列表为空 = 真的没有，
+    // 不再存在「有数据但落在窗口外」这种状态，所以那条提示连同它的分支一起删掉了。
+    const projectList = projectGroups; // 下拉列的是「归一化后的项目」，不再是原始字符串
+    const sideAgents = computed(() => [...new Set([...Object.keys(agentsMeta.value), ...Object.keys(agents.value)])].sort());
+
+    // ----- 图标 / 颜色 -----
+    const isDisabled = name => { const m = agentsMeta.value[name]; return !!m && m.enabled === false; };
+    const isMissing = name => { const m = agentsMeta.value[name]; return !!m && !!m.missing; };
+    // R16：图标级 agent —— 只有图标、没有解析器，永远不会被自动发现（侧栏与「添加 agent」都要明示）
+    const isIconOnly = name => ICON_ONLY_AGENTS.has(name);
+    // 进行中的轮：只认「最新一条 + 服务端明确未结束 + 最近仍有活动」；trace 为一次性写入，不参与。
+    const LIVE_STALE_MS = 5 * 60 * 1000;
+    const isLive = id => liveIds.value.has(id);
+
+    const pathTip = name => {
+      const m = agentsMeta.value[name];
+      if (!m) return '';
+      return ['格式：' + m.kind, m.source ? '来源：' + m.source : '', m.enabled === false ? '已禁用' : '', m.missing ? '目录不存在' : '',
+        m.sessions, m.traces].filter(Boolean).join('\n');
+    };
+
+
+
+    // ----- agent 管理 -----
+    async function loadAgents() {
+      try {
+        const arr = await getJSON('/api/agents');
+        const m = {}; for (const a of arr) m[a.name] = a;
+        agentsMeta.value = m;
+      } catch {}
+    }
+    // Trae 密钥抓取：POST /api/trae/capture-key → poll GET until done/error → ElMessage + reload
+    async function startTraeCapture(agentName) {
+      if (traeBusy.value) return;
+      traeBusy.value = agentName;
+      let polling = true;
+      let tries = 0;
+      try {
+        ElMessage.info('请在 Trae 里发一条 AI 消息（触发它打开数据库），然后等待抓取完成...');
+        // POST 起抓
+        const postJ = await getJSON('/api/trae/capture-key', { method: 'POST' });
+        if (!postJ.ok || !postJ.state) throw new Error(postJ.error || '启动失败');
+        // Poll GET every 1.5s until phase≠running
+        while (polling && tries < 200) {   // ~5 分钟上限（200×1.5s）
+          await new Promise(r => setTimeout(r, 1500));
+          const st = await getJSON('/api/trae/capture-key');
+          if (!st.ok) throw new Error(st.error || '状态查询失败');
+          if (st.state.phase === 'done') {
+            polling = false;
+            ElMessage.success('密钥已写入，正在扫描...');
+            await Promise.all([loadAgents(), loadSnapshot()]);
+            break;
+          }
+          if (st.state.phase === 'error') {
+            polling = false;
+            const msg = st.state.message || '抓取失败';
+            ElMessage.error(msg);
+            break;
+          }
+          tries++;
+        }
+        if (polling) {
+          ElMessage.error('抓取超时，请重试');
+        }
+      } catch (e) {
+        ElMessage.error(e.message || '抓取失败');
+      } finally {
+        traeBusy.value = '';
+      }
+    }
+    // Trae 密钥清除：POST /api/trae/clear-key → confirm → reload
+    async function clearTraeKey(agentName) {
+      if (traeBusy.value) return;
+      try {
+        const ok = await ElMessageBox.confirm('清除该 agent 的密钥配置？下一轮扫描会回退到 renderer.log 解析。', '确认清除密钥', { type: 'warning' });
+        if (!ok) return;
+        const j = await getJSON('/api/trae/clear-key', { method: 'POST' });
+        if (!j.ok) throw new Error(j.error || '清除失败');
+        ElMessage.success('密钥已清除');
+        await Promise.all([loadAgents(), loadSnapshot()]);
+      } catch (e) {
+        ElMessage.error(e.message || '清除失败');
+      }
+    }
+    // 页面命令分发器（el-dropdown @command）
+    function traeCommandUI(command, name) {
+      if (!name) return;
+      if (command === 'trae-retry') startTraeCapture(name);
+      else if (command === 'trae-clear') clearTraeKey(name);
+    }
+    function openAdd() {
+      addVisible.value = true;   // 表单重置在组件里（打开时清空）
+    }
+    // 组件加完 agent 的收尾：重拉列表与快照（改前这段在 submitAdd 里）
+    async function onAgentAdded() {
+      await Promise.all([loadAgents(), loadSnapshot()]);
+    }
+    // ----- 环境诊断（R25 批 1 起是 page/dialog-diag.js 组件）-----
+    // 根只留开关：探测结果、加载态、错误都在组件里（改前那个 reactive 一并搬走了）。
+    const diagVisible = ref(false);
+    // getJSON 是组件们唯一需要从根借的东西：接口 404 要点亮顶部版本红条，那段判断只有根这一份。
+    // 谁去 fetch 都行，但错误口径不能各写一套（弹层里重写一遍 = 红条对弹层失效）。
+    provide('getJSON', getJSON);
+
+    // ---- 上下文窗口表 ----
+    // 只服务于 claude 卡片的进度条分母（别的 agent 自带窗口字段）。页面只管编辑，
+    // 查表与重算都在服务端 —— 改完表要重算已经扫出来的条目，那是服务端的事（见 setCtxWindows）。
+    // R25 批 1：表本身（rows/unknown/编辑态）搬进了 page/dialog-ctxw.js，根只留两样东西：
+    //   · visible —— 开关（侧栏项点开、弹层关闭时回写）
+    //   · ctxUnfilled —— 侧栏那枚「待填 N」徽章的数（弹层拉完/保存完上报，改动前也是同一份数）
+    const ctxwVisible = ref(false);
+    const ctxUnfilled = ref(0);
+    // 侧栏徽章用：只拉一次、失败静默（打开弹层时会再拉一次并上报）
+    async function refreshCtxUnfilled() {
+      try {
+        const j = await getJSON('/api/ctxwindows');
+        if (j.ok) ctxUnfilled.value = (j.unknown || []).length;
+      } catch {}
+    }
+
+    async function toggleAgentUI(name, enabled) {
+      toggleLoading.value = name;
+      try {
+        const j = await getJSON('/api/agents/toggle', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, enabled }),
+        });
+        if (!j.ok) { ElMessage.error(j.error || '操作失败'); return; }
+        // 禁用：立刻本地摘掉该 agent 的条目（不等 SSE，3 秒内必消失）
+        if (!enabled) all.value = all.value.filter(e => e.agent !== name);
+        ElMessage.success((enabled ? '已启用 ' : '已禁用 ') + name);
+        await Promise.all([loadAgents(), loadSnapshot()]);
+      } catch (e) { ElMessage.error(e.message); }
+      finally { toggleLoading.value = ''; }
+    }
+    async function removeAgentUI(name) {
+      try {
+        await ElMessageBox.confirm('移除 agent「' + name + '」？列表条目会被清除（不删本地日志文件）。', '移除 agent',
+          { type: 'warning', confirmButtonText: '移除', cancelButtonText: '取消' });
+      } catch { return; }
+      try {
+        const j = await getJSON('/api/agents?name=' + encodeURIComponent(name), { method: 'DELETE' });
+        if (j.ok) {
+          ElMessage.success('已移除 ' + name);
+          if (fAgent.value === name) fAgent.value = '';
+          await Promise.all([loadAgents(), loadSnapshot()]);
+        } else ElMessage.error(j.error || '移除失败');
+      } catch (e) { ElMessage.error(e.message); }
+    }
+
+    // 快照 URL：**选中某个 agent / 项目 / 时间范围时窗口跟着收窄**（服务端取「该筛选集内的最近 N 条」）。
+    // 不能「取全局最近 N 条再在页面上过滤」—— 那样日志年代久的 agent / 项目永远落在窗口外，点进去只能是空列表。
+    // project 传的是归一化 key（projKey），服务端按同一个 key 过滤，见 projNorm 上方的提醒。
+    // R22：时间范围改传显式 from/to（YYYY-MM-DD），服务端 /api/snapshot 已支持与 /api/daily 同一套 filterEntries。
+    const snapUrl = forceScan => {
+      const q = new URLSearchParams();
+      q.set('limit', fLimit.value);
+      if (fDates.value) { q.set('from', fDates.value[0]); q.set('to', fDates.value[1]); }
+      // R10：多选生效仅当单选为空（互斥），服务端 agents=/projects= 逗号合集
+      if (fAgent.value) q.set('agent', fAgent.value);
+      else if (fAgents.value.length) q.set('agents', fAgents.value.join(','));
+      if (fProject.value) q.set('project', fProject.value);
+      else if (fProjects.value.length) q.set('projects', fProjects.value.join(','));
+      if (forceScan) q.set('scan', '1');
+      return '/api/snapshot?' + q.toString();
+    };
+
+    // 点侧栏切 agent：窗口的定义变了，必须整份重拉（不是只改个筛选条件）。
+    // 顺带把条/页也重置回第一屏（loadSnapshot 里做）。
+    async function pickAgent(name) {
+      if (fAgent.value === name && !fAgents.value.length) return;
+      fAgent.value = name;
+      if (name) fAgents.value = [];            // R10：单选生效时清多选，互斥（单选优先）
+      await loadSnapshot();
+    }
+    // 选项目同理：清空（clearable 会给到 '' / undefined）也要重拉回全局窗口。
+    // **这里不能加「值没变就 return」的短路**：el-select 的 @change 是在 v-model 更新**之后**才发的，
+    // 拿 fProject.value 跟新值比一定相等，加了就永远不会重拉（踩过：窗口不缩、列表空着）。
+    // 重复选中本来就不会触发 change，不需要再自己挡一道。
+    async function pickProject(key) {
+      fProject.value = key || '';
+      if (key) fProjects.value = [];           // R10：单选生效时清多选，互斥（单选优先）
+      await loadSnapshot();
+    }
+    // R10 多选 change：与单选同款整份重拉。多选生效的前提是对应单选为空（模板 v-show 已保证不可见），
+    // 但保险起见 pickAgent / pickProject 触发时清掉多选，保证互斥语义（单选优先）。
+    async function pickAgentsMulti(v) {
+      fAgents.value = v || [];
+      await loadSnapshot();
+    }
+    async function pickProjectsMulti(v) {
+      fProjects.value = v || [];
+      await loadSnapshot();
+    }
+    // 换时间范围同样整份重拉（清空也要，回到全部时间）。同 pickProject：**不要**加「值没变就 return」的短路，
+    // el-date-picker 的 @change 在 v-model 更新之后才发，比一定相等（踩过，见 §11.5）。
+    // 选区非法（只选了半边 / 空数组）一律回落 null = 全部时间，宁可全给也不静默给错区间。
+    async function pickRange(v) {
+      fDates.value = (v && v.length === 2 && v[0] && v[1]) ? [v[0], v[1]] : null;
+      await loadSnapshot();
+    }
+
+    // ---- R4 筛选状态深链（hash）：agent / project / 时间范围 / status 四个主要筛选 ----
+    // 用 hash 而非 query：页面也可能被 file:// 直开（PAGE_SERVED 场景），hash 两种方式都不产生路径问题。
+    // fSearch 是纯客户端过滤且高频输入，不进 URL（避免每敲一个字改一次地址栏）。
+    // R22：时间范围在 hash 里写显式 from=/to=（YYYY-MM-DD）；也兼容旧链接的 range=today/7d/30d 符号。
+    function updateHash() {
+      const p = new URLSearchParams();
+      if (fAgent.value) p.set('agent', fAgent.value);
+      else if (fAgents.value.length) p.set('agents', fAgents.value.join(',')); // R10：多选态写合集键
+      if (fProject.value) p.set('project', fProject.value);
+      else if (fProjects.value.length) p.set('projects', fProjects.value.join(','));
+      if (fDates.value) { p.set('from', fDates.value[0]); p.set('to', fDates.value[1]); }
+      if (fStatus.value) p.set('status', fStatus.value);
+      // R33：**只有已提交的搜索**才进深链（searchOn 为真），输入框里正在敲的字不进 ——
+      // 与 fSearch 不进 URL 是同一条理由，避免每敲一个字改一次地址栏。
+      if (searchOn.value && searchQ.value) {
+        p.set('q', searchQ.value);
+        if (searchRegex.value) p.set('re', '1');
+        if (searchNarrow.value) p.set('narrow', '1');
+      }
+      // R6：视图也进深链（'log' 是默认值，不写，保持老 URL 干净）
+      if (view.value !== 'log') p.set('view', view.value);
+      const h = p.toString();
+      const next = location.pathname + location.search + (h ? '#' + h : '');
+      if (location.hash !== (h ? '#' + h : '')) history.replaceState(null, '', next);
+    }
+    // 打开带参 URL 时还原筛选：在首次 loadSnapshot 之前应用，服务端窗口按参数收窄。
+    // 时间范围三态：显式 from/to → 直接用；旧 range 符号 → 换算成区间（与服务端符号档等价）；
+    // 一个都没有 → 默认最近 2 天（R22 需求）。from/to 缺一个时补齐（to 缺省今天，from 缺省 to）。
+    (function restoreFromHash() {
+      const p = location.hash ? new URLSearchParams(location.hash.slice(1)) : null;
+      if (p) {
+        if (p.get('agent')) fAgent.value = p.get('agent');
+        else if (p.get('agents')) fAgents.value = p.get('agents').split(',').filter(Boolean); // R10：多选深链，与单值键互斥（单值优先）
+        if (p.get('project')) fProject.value = p.get('project');
+        else if (p.get('projects')) fProjects.value = p.get('projects').split(',').filter(Boolean);
+        if (p.get('status')) fStatus.value = p.get('status');
+        // 视图还原只改状态、**不发请求**：这个 IIFE 在第一份快照之前跑，此刻服务端可能还在首扫，
+        // 会话列表要等启动那一批请求之后再去拉（见文件下方 bootstrap 里的注释）。
+        if (p.get('view') === 'sess') view.value = 'sess';
+        // R33 搜索态：同一条理由，这里只把状态备好、**不发请求** —— 首扫还没完时搜出来的索引是空
+        // 的，会白搜一次还落个「命中 0 条」。真正触发在 bootstrap 里（见 pendingSearch）。
+        if (p.get('q')) {
+          pendingSearch = { q: p.get('q'), regex: p.get('re') === '1', narrow: p.get('narrow') === '1' };
+          fSearch.value = pendingSearch.q;   // 输入框里也摆上，清除搜索后还能接着在窗口里过滤
+        }
+      }
+      const from = p && p.get('from'), to = p && p.get('to'), sym = p && p.get('range');
+      if (from || to) {
+        const fromV = from || to, toV = to || from;
+        fDates.value = [fromV, toV];
+      } else if (sym) {
+        fDates.value = symbolToDates(sym) || defaultRange();
+      } else {
+        fDates.value = defaultRange();   // 默认最近 2 天（今天 + 昨天）
+      }
+    })();
+
+    async function loadSnapshot(forceScan) {
+      snapPending = true;   // 在途期间到达的增量消息先排队（理由见 connect 上方注释）
+      try {
+        const j = await getJSON(snapUrl(forceScan));
+        all.value = trimAll(j.entries);
+        // 服务端告诉我们「当前筛选范围内一共多少条」——不一定等于拿回来的这些（条/页窗口会截断）。
+        // 不显示它的话，30 天范围内有 2672 条、页面写着「共 2000 条」，用户会以为那就是全部。
+        rangeTotal.value = typeof j.rangeTotal === 'number' ? j.rangeTotal : all.value.length;
+        agents.value = j.agents; projects.value = j.projects;
+        if (typeof j.scanMs === 'number') scanMs.value = j.scanMs;
+        if (typeof j.idleExitMs === 'number') idleExitMs.value = j.idleExitMs;
+        appliedSeq = Math.max(appliedSeq, j.seq || 0);
+        recomputeLive();
+        shown.value = STEP;
+        updateHash();   // R4：筛选状态随每次快照同步进 hash（pickAgent/Project/Range 都经过这里）
+      } finally {
+        // 骨架屏只在「首份快照」这段时间里挂着；之后 loadSnapshot 还会被刷新/resync 多次调用，
+        // 那时候走的是正常的空态文案，不能再画骨架。
+        // 放在 finally：fetch 抛错也得摘掉，否则骨架屏会一直转下去。
+        booting.value = false;
+        // 快照应用完再补放排队的增量：seq 守卫会把「已含在快照里」的那些自动丢掉，不会重复计数。
+        // 失败路径（fetch 抛错）也要补放，否则直播流会永久卡在这里。
+        snapPending = false;
+        for (const m of snapQueue.splice(0)) { try { handleMsg(m); } catch {} }
+      }
+    }
+    // 手动刷新：即使处于「不实时更新」也先扫一轮（后端 ?scan=1），否则点了等于没点
+    async function refresh() { shown.value = STEP; await loadSnapshot(true); ElMessage.success('已刷新'); }
+
+    // 调整实时刷新频率（0 = 不实时更新）。服务端落盘并广播，多标签页保持一致
+    async function setScan(v) {
+      const ms = Number(v);
+      if (ms === scanMs.value) return;
+      try {
+        const j = await getJSON('/api/settings', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ scanMs: ms }),
+        });
+        if (j.ok) {
+          scanMs.value = j.scanMs;
+          ElMessage.success(ms ? '刷新频率已改为每 ' + (ms / 1000) + ' 秒' : '已暂停实时更新（仍可手动刷新）');
+        } else ElMessage.error(j.error || '设置失败');
+      } catch (e) { ElMessage.error('设置失败：' + e.message); }
+    }
+
+    // 空闲自停（服务端落盘并广播）。改完立刻生效，不影响当前打开着的页面
+    async function setIdle(v) {
+      const ms = Number(v);
+      if (ms === idleExitMs.value) return;
+      try {
+        const j = await getJSON('/api/settings', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ idleExitMs: ms }),
+        });
+        if (j.ok) {
+          idleExitMs.value = j.idleExitMs;
+          ElMessage.success(ms ? '已开启：页面全关且无新日志超过 ' + (ms / 3600000 >= 1 ? (ms / 3600000) + ' 小时' : (ms / 60000) + ' 分钟') + '后服务自动退出' : '已关闭空闲自停');
+        } else ElMessage.error(j.error || '设置失败');
+      } catch (e) { ElMessage.error('设置失败：' + e.message); }
+    }
+
+    // 唤出桌面悬浮卡片（顶栏「悬浮卡片」按钮）：POST /api/client 让服务端跑 runClient()，
+    // 等价命令行 agentacta --client。卡片已被 ✕ 关掉时壳靠 second-instance 分支重建（widget/main.js）。
+    const clientLaunching = ref(false);
+    async function launchClient() {
+      if (clientLaunching.value) return;
+      clientLaunching.value = true;
+      try {
+        const j = await getJSON('/api/client', { method: 'POST' });
+        if (j.ok) ElMessage.success('悬浮卡片已唤出（重复点击只是聚焦）');
+        else ElMessage.error(j.error || '唤出失败');
+      } catch (e) { ElMessage.error('唤出失败：' + e.message); }
+      finally { clientLaunching.value = false; }
+    }
+
+    // 前端上限：all 超过 MAX_ALL 丢弃最旧（服务端已按时间降序返回）
+    function trimAll(list) {
+      if (list.length <= MAX_ALL) { capped.value = false; return list; }
+      capped.value = true;
+      return list.slice(0, MAX_ALL);
+    }
+    // 进行中的轮 = 每个 agent 最新一条，且服务端明确未结束；老/无结束标志的最后一轮只在最近 5 分钟内兜底。
+    function recomputeLive() {
+      const latest = {};
+      for (const e of all.value) {
+        const t = e.time || 0;
+        if (!latest[e.agent] || t > (latest[e.agent].time || 0)) latest[e.agent] = e;
+      }
+      const now = Date.now();
+      const s = new Set();
+      for (const k in latest) {
+        const e = latest[k];
+        if (e.agent === 'trace' || e.finished || e.aborted) continue;
+        if (now - (e.time || 0) <= LIVE_STALE_MS) s.add(e.id);
+      }
+      liveIds.value = s;
+    }
+
+    async function fetchDetail(id, full) {
+      return await getJSON('/api/entry?id=' + encodeURIComponent(id) + (full ? '&full=1' : ''));
+    }
+    async function toggle(id) {
+      expandedId.value = expandedId.value === id ? null : id;
+      if (expandedId.value && !details[id]) {
+        try { details[id] = prepDetail(await fetchDetail(id, false)); }
+        catch (err) { details[id] = { user: '[加载失败: ' + err.message + ']', assistant: '', tools: [] }; }
+      }
+    }
+    // 懒加载完整内容（后端按 800 字符截断时用）
+    async function loadFull(id) {
+      if (fullIds.value.has(id)) return;
+      fullIds.value = new Set(fullIds.value).add(id);
+      try { details[id] = prepDetail(await fetchDetail(id, true)); } catch (e) { ElMessage.error(e.message); }
+    }
+    // 进行中的轮手动重取（SSE 到达时也会自动重取已展开的轮）
+    async function reloadDetail(id) {
+      try {
+        const d = await fetchDetail(id, fullIds.value.has(id));
+        // 内容没变就不替换：替换 = 整张详情的 DOM 重 diff。进行中的轮每次 SSE 都会走到这里，
+        // 不拦截的话展开着的卡片会每 3 秒卡一下（「展开后整个页面持续卡」的来源之一）
+        if (details[id] && detailSig(details[id]) === detailSig(d)) return;
+        details[id] = prepDetail(d);
+      } catch (e) { ElMessage.error(e.message); }
+    }
+
+    // ----- 长内容的收放（「内容很多」时的那套：先露几条 + 「展开全部 N 条」，展开了在末尾给「收起」） -----
+    //
+    // 为什么需要：本机实测单轮工具调用最多 **81 个**、LLM 调用 73 次，逐条铺开是十几屏 ——
+    // 想往下翻下一张卡片，得先滑过这整整一屏。这与知乎「展开全部评论 / 收起评论」是同一个问题。
+    //
+    // 阈值按每块的实际高度定，不是拍脑袋：工具块一条占 ~200px（上下各一段 <pre>，各自封顶 150px），
+    // 6 条就约等于一屏；调用明细与 span 是单行 ~30px，给 12/10 行才到半屏。
+    const SEC_N = { tools: 6, calls: 12, spans: 10 };
+    // 点开过的区块记在这儿（key = 条目 id + 区块名）。用对象而不是一个布尔值：
+    // 收起卡片再展开、或在几条记录之间来回点，不该把「我刚展开过这一块」的意图弄丢。
+    const secOpen = reactive({});
+    // 当前展开条目的三个长列表视图。做成 computed 而不是在模板里逐个算：模板里写函数，
+    // 每次重渲染都会把每个列表重新切一遍，而这里的结果只跟「哪张卡片展开着 + 点开过哪些区块」有关。
+    const secs = computed(() => {
+      const id = expandedId.value, d = id ? details[id] : null;
+      if (!id || !d) return null;
+      const mk = (k, list) => {
+        const n = SEC_N[k], more = list.length > n, open = !!secOpen[id + ':' + k];
+        // 不够 n 条就不切、也不显示按钮 —— 只有真的「内容很多」时才多出这一行控件
+        return { more, open, items: (open || !more) ? list : list.slice(0, n), rest: more ? list.length - n : 0 };
+      };
+      return { spans: mk('spans', d.spans || []), calls: mk('calls', d.calls || []), tools: mk('tools', d.tools || []) };
+    });
+    function toggleSec(k) { const id = expandedId.value; if (id) secOpen[id + ':' + k] = !secOpen[id + ':' + k]; }
+
+    // 卡片 v-memo 的依赖清单（数组长度必须固定，长度变化会被 Vue 当成「memo 失效」强制重渲）。
+    // 收起的卡片：只依赖条目本体（applyUpdate 会整体换对象）和 live 标志（titleOf 的「(进行中)」）。
+    // 展开的卡片：把详情区读到的响应式状态**全**列上 —— 漏一个，那个操作就会「点了没反应」
+    // （memo 相等 → 整棵子树跳过重渲）。所以这里宁多勿漏：
+    //   details[id] 详情本体（拉取/重取时整体替换，引用变化即重渲）
+    //   secOpen 三个区块的「展开全部」开关
+    //   callOpen / toolJsonFold 两个 ref<Set>：toggle 时整体换新 Set，引用比较就够
+    //   fullIds 是否已拉过完整版（「查看完整内容」按钮的显隐）
+    const cardMemo = e => {
+      const liveBit = liveIds.value.has(e.id);
+      const cmpBit = compareSet.value.has(e.id);   // I9：对比选中态变了卡片要跟着重渲（按钮高亮）
+      if (expandedId.value !== e.id) return [e, false, liveBit, cmpBit, 0, 0, 0, 0, 0, 0, 0];
+      const id = e.id;
+      return [e, true, liveBit, cmpBit,
+        details[id],
+        !!secOpen[id + ':spans'], !!secOpen[id + ':calls'], !!secOpen[id + ':tools'],
+        callOpen.value, toolJsonFold.value,
+        fullIds.value.has(id)];
+    };
+
+    // 详情底部的「收起」：折叠这张卡片，并把卡片滚回视野。
+    // 为什么要滚：详情可能有十几屏高，收起后页面骤然变短，滚动位置会停在别处 ——
+    // 用户上一秒还在读 AI 输出，下一秒眼前是几张不相干的卡片，看着像点错了。
+    // 用 instant（不给 behavior）而不是 smooth：跨越上万像素的平滑滚动要好几秒，比直接跳更像卡死。
+    async function collapseCard(id, ev) {
+      const card = ev && ev.target && ev.target.closest ? ev.target.closest('.card') : null;
+      if (expandedId.value === id) expandedId.value = null;
+      await nextTick();   // 等 DOM 变矮再量位置，否则算的是收起前的高度
+      if (card) card.scrollIntoView({ block: 'nearest' });
+    }
+
+    function applyUpdate(entries, agentCounts, projectCounts) {
+      // 计数以服务端为准（本地累加会因增量/淘汰而漂移）。放在下面过滤之前：
+      // 收窄到某个 agent 时别的 agent 的条目会被丢掉，但侧栏数字仍要跟着更新。
+      if (agentCounts) agents.value = agentCounts;
+      if (projectCounts) projects.value = projectCounts;
+      // 收窄到某个 agent / 项目 / 时间范围时，窗口外的增量不进 all：all 的语义是「当前视图的窗口」，
+      // 混进来会让「共 N 条」虚高，长时间挂着的标签页还会用窗口外的条目把本视图的老条目顶出上限。
+      // 切回「全部」时整份重拉，这里丢掉的不影响正确性。
+      // R10 多选态同样要收窄（fAgents / fProjects 与单选互斥，单选为空时生效）—— 服务端 broadcast 对所有
+      // SSE 客户端推的是同一份全量脏条目，不认前端的筛选（首屏/刷新走 snapUrl 由服务端收窄，只有这里靠本地）。
+      let list = entries;
+      if (fAgent.value) list = (list || []).filter(e => e.agent === fAgent.value);
+      else if (fAgents.value.length) list = (list || []).filter(e => fAgents.value.includes(e.agent)); // R10 多选合集，与 filtered 同口径
+      if (fProject.value) list = (list || []).filter(e => projKey(e.project) === fProject.value);
+      else if (fProjects.value.length) list = (list || []).filter(e => fProjects.value.includes(projKey(e.project))); // R10 多选合集
+      if (fDates.value) list = (list || []).filter(e => rangeTest(e.time));
+      if (!list || !list.length) return;
+      const map = new Map(all.value.map((x, i) => [x.id, i]));
+      const added = [];
+      for (const e of list) {
+        const i = map.get(e.id);
+        if (i !== undefined) all.value[i] = e;
+        else added.push(e);
+      }
+      if (added.length) {
+        all.value = added.concat(all.value).sort((a, b) => (b.time||0) - (a.time||0));
+      } else if (list.some(e => map.get(e.id) !== undefined)) {
+        // 原地更新后顺序可能变（时间戳被回填），仅在有变化时重排
+        all.value = [...all.value].sort((a, b) => (b.time||0) - (a.time||0));
+      }
+      if (all.value.length > MAX_ALL) all.value = trimAll(all.value);
+      recomputeLive();
+      // 进行中且已展开的轮：自动重取详情（首屏刷新页面也能看到新内容）
+      for (const e of list) if (expandedId.value === e.id && liveIds.value.has(e.id)) reloadDetail(e.id);
+    }
+    // 统一的取 JSON 入口，替掉裸 `fetch(...).then(r => r.json())`。
+    //
+    // 裸写有个很难查的失败模式：服务端对不认识的路由走兜底 `res.statusCode = 404; res.end('not found')`，
+    // 于是 r.json() 抛的是 **「Unexpected token 'o', "not found" is not valid JSON」**——
+    // 用户拿着这句话既看不出是哪个接口、也猜不到是「服务是旧版本」，只能来问人。
+    // 这里把状态码和响应体截一段带回错误信息里，并且尽量说清楚下一步做什么。
+    async function getJSON(url, opt) {
+      const r = await fetch(url, opt);
+      const text = await r.text();
+      let j = null;
+      try { j = JSON.parse(text); } catch {}
+      if (j) return j;
+      const head = text.replace(/\s+/g, ' ').trim().slice(0, 120);
+      if (r.status === 404) {
+        // 只在还没有更准确的说明时才写：checkVersion 问的是 /api/version，它给出的「服务是 1.4.0 之前的旧版」
+        // 比这里是哪个接口 404 有用得多。启动时几个请求并行，谁先回来不定，所以要定优先级而不是比手速。
+        if (/^not found$/i.test(head) && !versionMismatch.value) {
+          versionMismatch.value = '服务上不存在这个接口（' + url.split('?')[0] + '）—— 多半是升级后旧的服务进程还在跑。';
+        }
+        throw new Error('接口 ' + url.split('?')[0] + ' 不存在（HTTP 404）');
+      }
+      throw new Error('接口 ' + url.split('?')[0] + ' 返回了 HTTP ' + r.status + ' 且不是 JSON：' + (head || '(空响应体)'));
+    }
+
+    // 比对页面与服务是不是同一版。三种情况要分开，别把「连不上」也说成「版本旧」：
+    //   请求失败        → 什么都不说（顶栏的「重连中…」已经在说这件事了，重复喊只会乱）
+    //   404             → 没有 /api/version 这个接口 = 老于本接口的服务，**最典型的错配**，必须说出来
+    //   答了但指纹不同   → 明确的版本错配
+    async function checkVersion() {
+      if (!PAGE_SERVED) return;   // file:// 直接打开的本地 HTML：没有服务，无从比对
+      let r;
+      try { r = await fetch('/api/version'); } catch { return; }
+      if (r.status === 404) { versionMismatch.value = '服务没有 /api/version 接口，说明它是 1.4.0 之前的旧版本。'; return; }
+      let j = null; try { j = await r.json(); } catch {}
+      if (!j || !j.build) return;
+      const mine = PAGE_BUILD_OK ? PAGE_BUILD : '';
+      if (!(mine && j.build === mine)) {
+        versionMismatch.value = '服务在跑 ' + (j.version || '?') + '/' + j.build
+          + (mine ? '，这张页面来自 ' + mine : '，而这张页面没有版本标记（服务是旧版、没往页面里注入，或这页是浏览器缓存的旧副本）') + '。';
+        return;
+      }
+      // 服务版对上了，再看页面文件（html + /page/*.js + /page/style.css）：
+      // 编辑页面文件后没刷新、或浏览器里留着旧标签页时，这一枚会对不上 —— 提示刷新即可（不是错配事故）。
+      const mineFiles = PAGE_FILES_OK ? PAGE_FILES_BUILD : '';
+      versionMismatch.value = (j.pageBuild && mineFiles && j.pageBuild !== mineFiles)
+        ? '页面文件更新过（本页 ' + mineFiles + '，服务现在发的是 ' + j.pageBuild + '）—— 刷新一下即可。'
+        : '';
+    }
+
+    function applyRemove(ids, agentCounts, projectCounts) {
+      const gone = new Set(ids);
+      all.value = all.value.filter(e => !gone.has(e.id));
+      for (const id of ids) delete details[id];
+      if (agentCounts) agents.value = agentCounts;   // 权威计数（否则侧栏数字会停在旧值）
+      if (projectCounts) projects.value = projectCounts;
+      recomputeLive();
+    }
+
+    // 首份快照在途时到达的增量消息先排队，等快照应用完再补放。
+    // 原因：loadSnapshot 是整体替换（all.value = j.entries），先连 SSE 再拉快照时，
+    // 期间到达的 update 会被随后到达的快照覆盖掉；而被丢掉的那几条文件没变，
+    // 下一轮扫描也不会再推（不是脏条目），会一直缺到用户手动刷新为止。
+    let snapPending = false;
+    const snapQueue = [];
+    const QUEUED_TYPE = { update: 1, remove: 1, resync: 1, agents: 1, alert: 1 };
+
+    function handleMsg(j) {
+      // hello 是「本连接」的元信息，必须无条件处理：冷启动时首个连接会先收到一条 scanning 事件、
+      // 再收到 hello，两条 seq 相同，走下面的乱序守卫会被误丢（hello 带初始 scanMs/空闲自停/扫描进度）。
+      if (j.type === 'hello') {
+        appliedSeq = Math.max(appliedSeq, j.seq || 0);
+        if (typeof j.scanMs === 'number') scanMs.value = j.scanMs;
+        if (typeof j.idleExitMs === 'number') idleExitMs.value = j.idleExitMs;
+        scanning.value = j.scanning || null;
+        // R9：hello 携带当前异常巡检摘要与命中 id，首屏即可点亮徽章 / 生效「只看异常」
+        if (j.alert) { applyAlertSummary(j.alert); applyAlertIds(j.alertIds); }
+        // 服务自报的指纹（见服务端 hello）。页面开着的时候服务被换过班时，这一条能立刻发现错配。
+        // 老服务的 hello 里没有 build 字段 —— 那正是「旧服务在跑」，交给 checkVersion 去问清楚（别在这儿下结论）。
+        if (j.build !== undefined && PAGE_SERVED) {
+          const mine = PAGE_BUILD_OK ? PAGE_BUILD : '';
+          if (!mine || j.build !== mine) {
+            versionMismatch.value = '服务换成了 ' + j.build + '（本页来自 ' + (mine || '未知版本') + '），刷新一下即可。';
+          } else {
+            // build 一致才轮到页面文件指纹：BUILD 不哈希 page/ 下的文件（R25 批 0），
+            // 只改了页面文件的话 build 不变 —— 少了这一段，「编辑页面 + 重启服务」开着的老标签页永远发现不了。
+            const mineFiles = PAGE_FILES_OK ? PAGE_FILES_BUILD : '';
+            versionMismatch.value = (j.pageBuild && mineFiles && j.pageBuild !== mineFiles)
+              ? '页面文件更新过（本页 ' + mineFiles + '，服务现在发的是 ' + j.pageBuild + '）—— 刷新一下即可。'
+              : '';
+          }
+        }
+        return;
+      }
+      if (j.seq != null && j.seq <= appliedSeq) return; // 乱序/重复，忽略
+      if (j.type === 'settings') { appliedSeq = j.seq; scanMs.value = j.scanMs; if (typeof j.idleExitMs === 'number') idleExitMs.value = j.idleExitMs; return; }
+      // 服务端首扫进度（不进 dirty、不保证重发）：phase='done' 就是扫完了
+      if (j.type === 'scanning') {
+        appliedSeq = j.seq;
+        scanning.value = j.phase === 'done' ? null : { done: j.done || 0, total: j.total || 0, agent: j.agent || '' };
+        return;
+      }
+      if (j.type === 'agents') {
+        appliedSeq = j.seq;
+        if (j.added) { ElMessage.info('发现新 agent：' + j.added); loadAgents().then(loadSnapshot); }
+        if (j.removed) { ElMessage.info('agent 已失效移除：' + j.removed); loadAgents().then(loadSnapshot); }
+        // Trae 密钥写入/清除后，服务端广播 agents（含 hasKey 变化），页面需要刷新侧栏状态
+        if ('traeKey' in j || 'traeKeyCleared' in j) { loadAgents(); return; }
+        return;
+      }
+      // R9：异常命中集合变化（新日志扫完 / 规则被改 / 弹层保存）→ 更新侧栏徽章与「只看异常」集合
+      if (j.type === 'alert') {
+        appliedSeq = j.seq;
+        applyAlertSummary(j.summary);
+        applyAlertIds(j.ids);
+        return;
+      }
+      if (j.type === 'update') { appliedSeq = j.seq; applyUpdate(j.entries, j.agents, j.projects); return; }
+      if (j.type === 'resync') { appliedSeq = j.seq; loadSnapshot(); return; }
+      if (j.type === 'remove') { appliedSeq = j.seq; applyRemove(j.ids || [], j.agents, j.projects); return; }
+    }
+
+    let es = null, retry = 0;
+    function connect() {
+      es = new EventSource('/api/events');
+      es.onopen = () => { live.value = true; retry = 0; };
+      es.onerror = () => { live.value = false; es.close(); setTimeout(connect, Math.min(15000, 1000 * ++retry)); };
+      es.onmessage = ev => {
+        try {
+          const j = JSON.parse(ev.data);
+          if (!j.type) return;
+          if (snapPending && QUEUED_TYPE[j.type]) { snapQueue.push(j); return; }
+          handleMsg(j);
+        } catch {}
+      };
+    }
+
+    // 先连 SSE 再拉快照（不是 .then 串行）：首扫分片期间页面必须尽早连上，
+    // 否则服务端发的 scanning 进度事件没有人收 —— 那就白写了。
+    connect();
+    loadSnapshot();
+    loadAgents();
+    checkVersion();       // 与上面三条并行，不阻塞首屏
+    refreshCtxUnfilled(); // 只为侧栏那个「待填 N」徽章，失败静默（打开弹层时会再拉一次并上报）
+    // R6：首屏就带 #view=sess 打开时，视图在 restoreFromHash 里已经还原成 'sess' 了（那是第一份快照之前跑
+    // 的 IIFE，那里只改状态、不发请求）。会话列表放在这一批启动请求之后拉：几个请求都是并行的、服务端
+    // 统一 whenReady 等首扫就绪，谁先回来都不影响列表的正确性，但放在快照**之前**会让「还没就绪」的空
+    // 结果先落地一次。
+    if (view.value === 'sess') loadSessions();
+
+    // R33：深链带了 #q=… 时，先把搜索态**立起来**再发请求。
+    // 先立态的理由是排序：上面 loadSnapshot() 落地后会调 updateHash，而 updateHash 只在 searchOn 为真时
+    // 才把 q 写回地址栏 —— 不先立态的话，它会先把深链带来的 q 抹掉、再被 runSearch 加回来，地址栏闪一下。
+    // 请求本身不急：/api/search 服务端挂 whenReady，首扫没好之前它自己会在那边排队。
+    if (pendingSearch) {
+      searchQ.value = pendingSearch.q;
+      searchRegex.value = pendingSearch.regex;
+      searchNarrow.value = pendingSearch.narrow;
+      searchOn.value = true;
+      runSearch(pendingSearch.q);
+    }
+
+    // R11 导出增强：三件事 —— ① 多格式（JSON / CSV / Excel）；② CSV/Excel 带上导出时的筛选条件，
+    // 能自证「按什么条件导出」（验收）③ 单条详情导出（含完整未截断内容）。不再硬截断 5000 条，
+    // 全量导出当前筛选集（filtered），JSON/CSV/Excel 一致。序列化与下载在 shared.js（零依赖纯函数）。
+    function exportFilename(ext) {
+      // 用**本地时间**：文件名要和筛选区间（本地自然日）、卡面上的时间对得上；toISOString 落的是 UTC，
+      // 东八区会出现「9 点导出的文件叫 01 点」。
+      const d = new Date(), p = n => String(n).padStart(2, '0');
+      return 'agent-acta-' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate())
+        + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds()) + '.' + ext;
+    }
+    // 「按什么条件导出」的完整说明：时间 / agent / 项目 / 状态 / 关键字 / 只看异常 / 条·页。
+    // 服务于导出附注（表头、说明行与 JSON 的 meta）。字段名与筛选含义照实写，不自欺。
+    function exportFilterText() {
+      const parts = [];
+      if (fDates.value) parts.push('时间: ' + fDates.value.join(' ~ '));
+      else parts.push('时间: 全部');
+      if (fAgent.value) parts.push('agent: ' + fAgent.value);
+      else if (fAgents.value.length) parts.push('agent: ' + fAgents.value.join(', '));
+      else parts.push('agent: 全部');
+      const projLab = fProject.value ? fProject.value : (fProjects.value.length ? fProjects.value.join(', ') : '全部');
+      parts.push('项目: ' + projLab);
+      parts.push('状态: ' + (fStatus.value || '全部'));
+      parts.push('关键字: ' + (fSearch.value || '（无）'));
+      if (alertOnly.value) parts.push('只看异常: 是');
+      parts.push('显示档位: ' + fLimit.value + ' 条/页');
+      return parts;
+    }
+    // 单条导出行的公共字段（卡片条目上全都有）。CSV 列即这些标量值。
+    const EXPORT_FIELDS = ['time', 'agent', 'project', 'session', 'status', 'preview', 'models', 'dur', 'tin', 'tout', 'tcache', 'total', 'calls', 'tools', 'nollm'];
+    function exportRows() {
+      return filtered.value.map(e => ({
+        time: fmtTime(e.time), agent: e.agent == null ? '' : e.agent, project: e.project == null ? '' : e.project,
+        session: e.session == null ? '' : e.session, status: e.status == null ? '' : e.status,
+        preview: e.preview == null ? '' : e.preview, models: modelText(e.models),
+        dur: e.dur == null ? '' : e.dur, tin: e.tin || 0, tout: e.tout || 0, tcache: e.tcache || 0, total: e.total || 0,
+        calls: e.calls == null ? '' : e.calls, tools: e.tools == null ? '' : e.tools, nollm: e.nollm ? '是' : '',
+      }));
+    }
+    function exportData(format) {
+      const rows = exportRows();
+      const note = exportFilterText();
+      const f = String(format || 'json').toLowerCase();
+      if (f === 'csv') {
+        const lines = [['筛选条件: ' + note.join('；')], ['# 共 ' + rows.length + ' 条'],
+          EXPORT_FIELDS];
+        for (const r of rows) lines.push(EXPORT_FIELDS.map(k => r[k]));
+        downloadBlob(new Blob([buildCSV(lines)], { type: 'text/csv;charset=utf-8' }), exportFilename('csv'));
+      } else if (f === 'xls' || f === 'excel') {
+        const header = EXPORT_FIELDS;
+        const xls = buildExcelXLSText('agent-acta', note, header, rows);
+        downloadBlob(new Blob([xls], { type: 'application/vnd.ms-excel;charset=utf-8' }), exportFilename('xls'));
+      } else {
+        const payload = { meta: { exportedAt: new Date().toISOString(), count: rows.length, filters: note }, entries: rows };
+        downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }), exportFilename('json'));
+      }
+    }
+    // 保持 exportJSON 名（历史事件仍叫 export-json），转发到 JSON 分支；缺省参数按 json。
+    function exportJSON(format) { exportData(format || 'json'); }
+
+    // R11 导出单条详情：拉取 /api/entry 的**完整**版（full=1，未截断），连同条目元信息一起导出为 JSON。
+    // 详情里工具入参/返回/逐次输出都是完整内容（服务端 full=1 就是为此存在的）。异步拉取，失败给提示。
+    async function exportEntryDetail(id) {
+      const e = id == null ? null : all.value.find(x => String(x.id) === String(id));
+      if (!e) { ElementPlus.ElMessage.warning('无法导出：找不到该条目'); return; }
+      try {
+        const d = await getJSON('/api/entry?id=' + encodeURIComponent(e.id) + '&full=1');
+        const payload = {
+          meta: {
+            exportedAt: new Date().toISOString(),
+            id: e.id, agent: e.agent, project: e.project, session: e.session,
+            time: fmtTime(e.time), status: e.status, durationMs: e.dur, models: modelText(e.models),
+            totalTokens: e.total || 0, note: '单条完整详情导出（full=1，内容未截断）',
+          },
+          entry: d,
+        };
+        downloadBlob(new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' }), exportFilename('entry-' + String(e.id).replace(/[^A-Za-z0-9_\-.]/g, '_').slice(0, 40) + '.json'));
+      } catch (err) {
+        ElementPlus.ElMessage.error('详情导出失败：' + (err && err.message ? err.message : String(err)));
+      }
+    }
+
+    // I8 单轮「复现包」：一键导出 zip（零依赖手写，见 shared.js 的 makeZip），内含：
+    //   repro-meta.json —— 条目元信息 + build 指纹（version/build/pageBuild/parserRev）+ 导出时的筛选条件
+    //   repro-raw.jsonl —— 该轮在原始日志里的片段（按解析器同款开轮判定切出；不可提取的 kind 诚实说明）
+    //   repro-parsed.json —— 该轮完整解析结果（full=1，含工具明细、逐次调用）
+    //   README.txt    —— 这个包是什么、怎么用、原始片段怎么定位
+    // 服务端没有筛选态，所以「当前筛选条件」由页面贡献（exportFilterText），原样嵌进 meta.filters。
+    async function exportRepro(id) {
+      const e = id == null ? null : all.value.find(x => String(x.id) === String(id));
+      if (!e) { ElementPlus.ElMessage.warning('无法导出复现包：找不到该条目'); return; }
+      try {
+        const filters = exportFilterText();
+        const url = '/api/repro?id=' + encodeURIComponent(e.id) + '&filters=' + encodeURIComponent(JSON.stringify(filters));
+        const data = await getJSON(url);
+        if (!data || !data.ok) throw new Error((data && data.error) || '服务端返回异常');
+        const safeId = String(e.id).replace(/[^A-Za-z0-9_\-.]/g, '_').slice(0, 40);
+        const rawName = 'repro-raw.jsonl';   // 里面就是磁盘上那几行原文（逐行 JSON），所以带 .jsonl
+        const rawText = (data.raw && data.raw.lines)
+          ? data.raw.lines.join('\n')
+          : ('# 原始片段不可用：' + ((data.raw && data.raw.note) || '未知原因') +
+            (data.raw && data.raw.file ? '\n# 原始路径：' + data.raw.file : ''));
+        const readme =
+          'AgentActa 单轮「复现包」\n' +
+          '====================\n' +
+          '这是某一轮 agent 请求日志的一键复现包，用于贴进聊天 / 提 bug 时带上完整上下文。\n\n' +
+          '包含文件：\n' +
+          '- repro-meta.json  条目元信息 + 服务/页面 build 指纹（version/build/pageBuild/parserRev）+ 导出时的筛选条件\n' +
+          '- repro-raw.jsonl 该轮在原始日志文件里的原始片段（行号与磁盘一致，可直接拷出复现）\n' +
+          '- repro-parsed.json 该轮完整解析结果（含工具明细、逐次调用，未截断）\n' +
+          '- README.txt  本说明\n\n' +
+          '筛选条件（导出那一刻的页面状态，自证「当时按什么条件看的」）：\n' +
+          (filters && filters.length ? filters.map(f => '  - ' + f).join('\n') : '  （无）') + '\n\n' +
+          '原始片段说明：' + ((data.raw && data.raw.note) || '') + '\n';
+        const files = [
+          { name: 'repro-meta.json', text: JSON.stringify(data.meta, null, 2) },
+          { name: rawName, text: rawText },
+          { name: 'repro-parsed.json', text: JSON.stringify(data.parsed, null, 2) },
+          { name: 'README.txt', text: readme },
+        ];
+        downloadBlob(makeZip(files), exportFilename('repro-' + safeId + '.zip'));
+        ElementPlus.ElMessage.success('复现包已导出（' + (rawText.startsWith('#') ? '原始片段不可用，' : '') + '含解析结果 + build 指纹 + 筛选条件）');
+      } catch (err) {
+        ElementPlus.ElMessage.error('复现包导出失败：' + (err && err.message ? err.message : String(err)));
+      }
+    }
+
+    // ----- 用量统计（C2；R25 批 1 起模板与统计逻辑全在 page/dialog-stats.js）-----
+    // 数据来自 /api/daily：服务端在同一套筛选集（agent / 项目 / 时间范围）上按自然日分桶，
+    // 且**不受「条/页」窗口限制**——所以这里的合计常常比列表标题那句「共 N 条」大，那不是 bug，
+    // 是「统计口径不跟着显示档位变」的刻意选择（按天聚合要是被 2000 条窗口截断，换个档位数字就变，没法信）。
+    // 根只剩三样：开不开（statsVisible）、递什么（statsReq）、弹层里换 agent 走侧栏那条路（onStatsAgentChange）。
+    // 统计图与列表用的是**同一份**条目，只是聚合维度不同：统计里没有「状态 / 搜索」这两个**客户端**筛选
+    // （它们是「在当前窗口里挑」，不是「看某个东西的全部」），要按它们统计得先说清楚语义。
+    const statsVisible = ref(false);
+    const statsReq = ref(null);
+    let statsReqN = 0;   // 只用来给 req 一个身份：开着弹层换 agent 时 visible 不变，组件靠 n 变化重算
+
+    // 「统计的是哪一份数据」必须写清楚：用户刚在侧栏点过 agent / 项目，看到的数字得能对上他那一下点击。
+    // 留在根是因为它读的是侧栏那份活状态（含项目分组名）——组件那边没有 projectGroups。
+    function statsFilterText() {
+      const parts = [fAgent.value ? 'agent = ' + fAgent.value
+        : (fAgents.value.length ? 'agent ∈ ' + fAgents.value.join(', ') : '全部 agent')]; // R10：多选态如实写进统计口径
+      if (fProject.value) {
+        const g = projectGroups.value.find(x => x.key === fProject.value);
+        parts.push('项目 = ' + (g ? g.label : fProject.value));
+      } else parts.push('全部项目');
+      return parts.join(' · ');
+    }
+    // 点击那一刻把「筛哪一份」拼成请求参数递给弹层（组件自己不认识侧栏状态）。
+    // keepRange：弹层里换 agent 时保住手选的日期区间（同一段时间跨 agent 对比才有意义）。
+    function openStats(keepRange) {
+      const qs = new URLSearchParams();
+      if (fDates.value) { qs.set('from', fDates.value[0]); qs.set('to', fDates.value[1]); }
+      // R22：时间范围与列表同一区间（显式 from/to，customBounds 口径），统计跟随列表筛选，不再各自为政。
+      // R10：多选态走 agents=/projects= 合集键（与单选互斥，同 snapUrl）
+      if (fAgent.value) qs.set('agent', fAgent.value);
+      else if (fAgents.value.length) qs.set('agents', fAgents.value.join(','));
+      if (fProject.value) qs.set('project', fProject.value);
+      else if (fProjects.value.length) qs.set('projects', fProjects.value.join(','));
+      statsReq.value = { qs: qs.toString(), filterText: statsFilterText(), keepRange: !!keepRange, n: ++statsReqN };
+      statsVisible.value = true;
+    }
+    // 弹层里的 agent 下拉与左侧栏是**同一个**筛选：改了它，背后的请求列表也跟着变，然后重算统计（保住日期区间）
+    async function onStatsAgentChange(name) {
+      await pickAgent(name || '');
+      openStats(true);
+    }
+
+    // R27 活跃热力图：根只管开不开（侧栏项与弹层关闭按钮都要动它），数据与聚合全在组件里
+    const heatmapVisible = ref(false);
+    // R28 历史归档：同上（数据源是归档文件，连筛选都不跟随）
+    const archiveVisible = ref(false);
+    // R30 磁盘占用：同上（自己拉 /api/usage，走一遍磁盘的只读统计）
+    const usageVisible = ref(false);
+    // R32 解析器自检：同上（自己拉 /api/selftest，只读上一次回归跑的结果 —— 跑测试不在页面里）
+    const selftestVisible = ref(false);
+    // R9 异常巡检：visible 控制弹层开合；alertCount 是侧栏徽章数；alertHits 是「命中 id 集合」
+    //（供「只看异常」筛选与弹层定位用，随 SSE alert 事件 / hello / 弹层保存回报而更新）。
+    const alertVisible = ref(false);
+    const alertCount = ref(0);
+    const alertHits = ref(new Set());
+    const alertOnly = ref(false);   // 「只看异常」开关：true 时 filtered 只留 alertHits 里的条目
+    function applyAlertSummary(s) { if (s && typeof s.count === 'number') alertCount.value = s.count; }
+    function applyAlertIds(ids) { alertHits.value = new Set(ids || []); }
+
+    // ---- I9 两轮 diff ----
+    // 卡片「对比」按钮的选中组：id 集合（最多 2 条）。选满两条自动弹开对比弹层，并清掉选中。
+    // compareReq 与选中组分开持有：关掉弹层不清它，所以重选同一对时不会先闪一下空态。
+    // ⚠ 弹层里**没有**「换条目」入口 —— 要换就得回列表重选两条（这条是设计边界，不是漏接线）。
+    const compareSet = ref(new Set());
+    const compareVisible = ref(false);
+    const compareReq = ref(null);
+    // 判一条在不在对比组里（作函数 prop 递给卡片，读的是根这份 Set）
+    const compareIsOf = id => compareSet.value.has(id);
+    function onCompare(e) {
+      const id = e.id;
+      const s = new Set(compareSet.value);
+      if (s.has(id)) { s.delete(id); compareSet.value = s; return; }    // 取消选中
+      if (s.size >= 2) { ElMessage.warning('一次只对比两条轮，先把已选的取消一条'); return; }
+      s.add(id); compareSet.value = s;
+      if (s.size === 2) {                                                   // 凑满两条 → 弹开 + 清选中
+        const [aid, bid] = [...s];
+        const src = searchOn.value ? searchHits.value : all.value;
+        const a = src.find(x => x.id === aid), b = src.find(x => x.id === bid);
+        // 选第一条与点第二条之间列表会换（SSE 增量、改筛选、切进搜索结果集）—— 那条可能就掉出去了。
+        // 宁可留着刚点的这条让人重选，也不要把 {a:undefined,b:undefined} 递进弹层：
+        // 那会弹出一个写着「还没有选够两条轮」的空层，看着像功能坏了。
+        if (!a || !b) {
+          compareSet.value = new Set([id]);
+          ElMessage.warning('先选的那条已不在当前列表里，请重新选两条');
+          return;
+        }
+        compareReq.value = { a, b };
+        compareVisible.value = true;
+        compareSet.value = new Set();
+      }
+    }
+
+    return {
+      all, booting, agents, versionMismatch, pageBuild: PAGE_BUILD_OK ? PAGE_BUILD : '', fAgent, fSearch, fProject, fDates, fStatus, fLimit, shown, STEP, showNoLLM, rangeTotal, failCount,
+      renderMd, prettyJson, copyRaw, toolJsonFold, toggleJsonFold, callOpen, toggleCallOut, toolText, fullIds,
+      sessVisible, sessReq, openSession, fmtDurBig,
+      locateEntry,
+      // R33 全文搜索：状态与两个动作交给 aa-log-view 渲染与转发（数据本身仍在根里，见头部契约）
+      searchOn, searchQ, searchRegex, searchBusy, searchNarrow, searchError, searchMeta, searchCapped, searchHits,
+      runSearch, clearSearch, toggleSearchNarrow,
+      pickAgent, pickProject, pickRange, updateHash,
+      statsVisible, statsReq, openStats, onStatsAgentChange, TrendCharts,
+      heatmapVisible,
+      archiveVisible,
+      usageVisible,
+      selftestVisible,
+      alertVisible,
+      alertCount,
+      alertOnly,
+      applyAlertSummary,
+      alertHits,
+      // I9 两轮 diff：选中组、弹层开关、递给弹层的两条、判选 + 收集回调
+      compareVisible, compareReq, compareSet, compareIsOf, onCompare,
+      expandedId, live, liveText, scanning, zhCn, filtered, visible, projectList, sideAgents,
+      scanMs, scanOptions, paused, setScan,
+      idleExitMs, idleOptions, idleText, setIdle,
+      clientLaunching, launchClient,
+      agentsMeta, addVisible, toggleLoading, capped,
+      // Trae 解密按钮（模板里 v-if / @command / :disabled 直接用了这几个名字）：漏在这儿的话
+      // _ctx.isTraeKeyAgent 是 undefined，v-if 一调用就抛 TypeError，整个 app.mount 失败 —— 表现是**整页白屏**，
+      // 而且是渲染期崩的，顶栏的版本错配提示也不会出现，别往缓存/旧进程上查。
+      isTraeKeyAgent, traeBusy, traeCommandUI, startTraeCapture, clearTraeKey,
+      // Cursor token 采集 hook 按钮（同上：模板里 v-if / :class / @click 直接用了这几个名字，
+      // 漏在这儿同样会整页白屏）
+      isCursorHookAgent, cursorHookBusy, cursorHookState, toggleCursorHook,
+      // R10 多选筛选：fAgents / pickAgentsMulti 是活的（661/663 行的 v-model 与 @change），
+      // fProjects / pickProjectsMulti 目前只在注释掉的那段里（项目筛选 2026-09-17 起停用），一起导出是为了恢复时不用再想这件事。
+      // 漏了不白屏，但多选一直不工作，统计弹窗里的 fAgents.length 还会抛同样的 TypeError。
+      fAgents, fProjects, pickAgentsMulti, pickProjectsMulti,
+      secs, toggleSec, collapseCard, cardMemo,
+      fmtN, fmtDur, fmtTime, agentLetter, ctxUsed, ctxPct, detailOf, titleOf, modelText, toolList,
+      isQoder, fmtCredits, fmtPct,
+      agentColor, agentIcon, iconOf, pathTip, isDisabled, isMissing, isIconOnly, isLive,
+      loadSnapshot, refresh, toggle, loadFull, reloadDetail, openAdd, onAgentAdded, removeAgentUI, toggleAgentUI, exportJSON, exportData, exportEntryDetail, exportRepro,
+      diagVisible,
+      ctxwVisible, refreshCtxUnfilled, ctxUnfilled,
+      // R6 会话视图（view='sess'）：状态、派生量、以及那几个动作都要在这里露出去
+      view, switchView, loadSessions, sessList, sessListLoading, sessListCapped, sessListError,
+      sessSearch, sessSort, sessListFiltered, sessPick, pickSession, openSessionByKey, sessCur, sessCurLoading,
+      sessOpen, sessToggleTurn, sessDetail, sessFullIds, sessLoadFull, sessHi, sessEventClick,
+      sessCursor, sessSpan, sessFrom, sessTo, sessHasEvents, sessOvTurns, sessOvEvents, sessEvIndex, sessEvRows, sessOvClick,
+      sessChart, sessChartOpen, sessChartGo, sessCollapseTurn,
+      fmtAgo, sumTok,
+      Search, Refresh, Download, QuestionFilled, Warning, DataLine,
+    };
+  },
+});
+
+app.use(ElementPlus);
+if (ElementPlusIconsVue) {
+  for (const [k, c] of Object.entries(ElementPlusIconsVue)) app.component(k, c);
+}
+// R25 批 1/2/3：组件注册一律在这儿做（方案 C 拍板）—— 根 script 最后执行，时序天然安全，
+// 组件之间互相引用（组件模板里再写组件标签）不需要各自的 components: 声明，也就没有
+// 「文件加载顺序错 → 引用到 undefined → prod 静默空白」这个坑。名字必须与组件文件的 name 一致
+// （test/page-components-test.mjs 两头对）。
+app.component('aa-dialog-diag', AACTA.DialogDiag);
+app.component('aa-dialog-add-agent', AACTA.DialogAddAgent);
+app.component('aa-dialog-ctxw', AACTA.DialogCtxw);
+app.component('aa-dialog-sess-timeline', AACTA.DialogSessTimeline);
+app.component('aa-dialog-stats', AACTA.DialogStats);
+app.component('aa-dialog-heatmap', AACTA.DialogHeatmap);
+app.component('aa-dialog-archive', AACTA.DialogArchive);
+app.component('aa-dialog-usage', AACTA.DialogUsage);
+app.component('aa-dialog-selftest', AACTA.DialogSelftest);
+app.component('aa-dialog-alert', AACTA.DialogAlert);
+app.component('aa-dialog-compare', AACTA.DialogCompare);
+app.component('aa-topbar', AACTA.Topbar);
+app.component('aa-sidebar', AACTA.Sidebar);
+app.component('aa-sess-view', AACTA.SessView);
+// 批 4：卡片先登记（aa-log-view 的模板里用它）—— 注册都在 app.mount 之前，解析时机安全
+app.component('aa-log-card', AACTA.LogCard);
+app.component('aa-log-view', AACTA.LogView);
+app.mount('#app');
+</script>
+</body>
+</html>

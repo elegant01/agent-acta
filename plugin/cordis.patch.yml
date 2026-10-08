@@ -1,0 +1,5 @@
+# AgentActa 插件的 bundle patch（I11 批 4 的另一半）：宿主按这份把自己插进 bundle 层。
+# patch 行的 id 是短名、name 是包名，两者不是一回事 —— 浏览器模块 id 用的是包名（见 plugin/client.js 的 load({id})）。
+- insert:
+    - id: agent-acta-panel
+      name: '@yxzpro/agent-acta'

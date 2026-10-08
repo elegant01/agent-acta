@@ -1,0 +1,724 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- 服务端发这张页面时把 content 换成进程指纹（见 agent-acta-server.mjs 的 '/widget' 路由）。
+     全文件只放这一处、不参与 JS 判断的左右两边 —— 否则注入后两边一起变，永远判「一致」。 -->
+<meta name="agent-log-build" content="__AGENT_LOG_BUILD__">
+<title>Agent 实况</title>
+<style>
+:root{
+  --bg:#fff; --card:#fff; --border:#e5e7ee; --border-light:#eef0f4;
+  --text:#1f2329; --regular:#3d4454; --secondary:#646a73; --placeholder:#8f959e;
+  --primary:#3b74e7; --green:#18a058; --red:#d03050; --orange:#c26a1b; --purple:#7c5cd6;
+  --panel:#f7f8fa; --scroll:rgba(0,0,0,.2);
+}
+/* ===== 悬浮模式（?float=1，Electron 无边框透明窗口）=====
+   深色「毛玻璃」：Win10（19045）拿不到系统的真模糊（DWM 的 acrylic/mica 是 Win11 的东西），
+   所以底是 80% 不透明的深色 —— 看着是玻璃感，实际是诚实的高透明，别在这上面堆 backdrop-filter。
+   （2026-09-23 从 88% 降到 80%：用户要更透；再低白字在亮色桌面上会飘。卡片与球同皮，一起降。）
+   圆角由 #wrap 画；卡片本体不打外阴影（2026-09-21 用户要求去掉），透明留白只剩球的阴影/辉光在用。 */
+html.float{--bg:rgba(9,9,11,.80); --card:rgba(255,255,255,.06); --border:rgba(255,255,255,.12);
+  --border-light:rgba(255,255,255,.07); --text:#f4f4f5; --regular:#e4e4e7; --secondary:#a1a1aa;
+  --placeholder:#7d8392; --primary:#7dd3fc; --green:#34d399; --red:#f87171; --orange:#fb923c;
+  --purple:#d8b4fe; --panel:rgba(255,255,255,.05); --scroll:rgba(255,255,255,.25)}
+/* 2026-09-24 配色换霓虹锌黑系（参照 gemini-code demo 第二版）：底 zinc-950、入 sky-300 /
+   出 orange-400 / 缓 purple-300、积分 amber-300、状态灯 emerald-400、失败红 red-400。
+   --placeholder 没跟 demo 的 zinc-500：80% 透明底叠亮色桌面会洗掉对比度，沿用调过的 #7d8392。 */
+/* ⚠️ 透明窗留边也是「点了没反应」的死区。球的阴影/辉光要罩得住：
+   blur/2 + 下移量 ≤ 留白，超出去的部分会被窗口边**切平成直边**，看着就是球外面
+   糊了一圈方影子（旧版卡片 0 10px 34px 要 27px、只给了 8px，四方全被切）。 */
+html.float body{background:transparent;padding:12px}
+/* inset 顶部高光：玻璃皮的「上沿受光」，扁平口径下唯一允许的层次线（纯色、1px、不外发光） */
+/* demo 的 glass-border：透明 border + 双层背景（padding-box 画卡底、border-box 画 sky→purple 渐变），
+   边框就是一条上 sky 下紫的 1px 微光线。卡底用 var(--bg) 保持 80% 透明，不像 demo 那样实心。 */
+html.float #wrap{border:1px solid transparent;border-radius:16px;overflow:hidden;
+  background-image:linear-gradient(var(--bg),var(--bg)),
+    linear-gradient(to bottom,rgba(56,189,248,.3),rgba(168,85,247,.15));
+  background-origin:border-box;background-clip:padding-box,border-box;
+  box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
+/* demo 的「背景弥散光晕」：两上角各一团 sky/purple 模糊圆斑，overflow:hidden 裁在卡内。
+   球模式这两个伪元素被后面的辉光规则接管（同特异性、球规则在后），这里只管卡片态。 */
+html.float:not(.ball) #wrap::before{content:'';position:absolute;top:-48px;left:-48px;width:160px;height:160px;
+  border-radius:50%;background:rgba(56,189,248,.18);filter:blur(48px);pointer-events:none}
+html.float:not(.ball) #wrap::after{content:'';position:absolute;top:-48px;right:-48px;width:160px;height:160px;
+  border-radius:50%;background:rgba(168,85,247,.16);filter:blur(48px);pointer-events:none}
+/* 内容压到光晕之上（同 demo 内容层的 z-10） */
+html.float:not(.ball) header,html.float:not(.ball) #stats,html.float:not(.ball) #feed{position:relative;z-index:1}
+/* 拖区：整个顶栏拖着走；里面的链接/按钮单独豁免，不然点不动。
+   ⚠️ drag 区在 Windows 上是系统级命中测试，落在里面的元素收不到 click —— 所以小球也要 no-drag。 */
+html.float header{-webkit-app-region:drag;user-select:none}
+html.float header a,html.float header button,html.float header .dot{-webkit-app-region:no-drag}
+/* 窗控按钮（最小化/关闭）：只在悬浮模式存在，悬停顶栏才显形 */
+.winbtn{display:none}
+html.float .winbtn{display:inline}
+/* 顶栏动作（重扫/面板↗/○/✕）平时收起、悬停顶栏才显形 —— 324px 的顶栏，常驻按钮吃掉四分之一。
+   必须带 visibility：opacity:0 的按钮看不见但**还能点**，而且它带着 no-drag —— 在 drag 区里
+   是个「拖不动的死点」，用户会以为是拖动失灵。 */
+/* 悬停显隐的**触发面必须是 #wrap，不能是 header**：header 整条是 -webkit-app-region:drag
+   （系统级命中测试 HTCAPTION），鼠标在它上面根本收不到 mouseover ⇒ `header:hover` 在 Electron 里
+   永不成立；而三个能收事件的子元素（按钮/链接）此刻正是 visibility:hidden，隐藏元素不参与命中，
+   于是「靠 hover 出现」自己把自己锁死了 —— 实测就是顶栏按钮怎么悬都不出来（浏览器里能复现不了：
+   Chrome 不实现 app-region，header:hover 照常触发，所以这个坑只在真卡片上露）。
+   #wrap 的正文区不是拖区，hover 得到 ⇒ 以整张卡为触发面。 */
+html.float header .winbtn,html.float header .hd-act{opacity:0;visibility:hidden;transition:opacity .2s,visibility .2s}
+html.float #wrap:hover header .winbtn,html.float #wrap:hover header .hd-act,
+html.float #wrap:focus-within header .winbtn,html.float #wrap:focus-within header .hd-act{opacity:1;visibility:visible}
+/* 悬浮模式布局收紧一档：窗口小，间距字号全跟着降。留白保持 12px 不动 ——
+   球的阴影还要它罩住（见上面那条），卡片模式留着只是同一窗口壳的代价。 */
+html.float header{padding:6px 8px}
+html.float #stats{padding:6px 8px}
+html.float .stat-big{font-size:15px;font-weight:900;text-shadow:0 0 12px rgba(255,255,255,.45)}  /* demo 的 font-black + glow-text */
+html.float .stat-sub{font-size:10.5px}
+/* 汇总区的入/出/缓数字带发光（demo 的 glow-blue / glow-amber）；缓存紫 demo 没给光，不加 */
+html.float #stats .tin{text-shadow:0 0 8px rgba(125,211,252,.55);font-weight:700}
+html.float #stats .tout{text-shadow:0 0 8px rgba(251,146,60,.55);font-weight:700}
+html.float #stats .tcache{font-weight:700}
+html.float #feed{padding:5px 6px 16px;user-select:none}  /* 底部留位给拖拽柄；user-select:none —— 列表区整片是拖窗把手（见 JS feed 那段），不禁掉选择一拖就糊一片蓝 */
+/* 卡片布局口径对齐根目录 gemini-code demo（列表项三段式）：
+   r1 左右分栏 —— 左「灯 + agent + 型号徽标」、右端时间（DOM 里 time 仍在灯后，float 用 order 挪行尾，
+   不动 DOM 是为了普通模式保持原样）；卡内边距 10/12、卡距 10（demo p-3 / space-y-2.5 按 324px 窗宽缩一档）；
+   r1 下距 6、摘要 12px 下距 8、明细行 11px + 8px 列距（demo 的 mb-1.5 / mb-2 / gap-2），时长照旧压右端。
+   状态点叠 demo 同款辉光（shadow-[0_0_8px_#34d399]）；明细数字发光不加 —— demo 列表项里的数字本身不带光。 */
+html.float .card{padding:10px 12px;margin-bottom:10px}
+html.float .card .r1{margin-bottom:6px}
+html.float .card .time{order:1;margin-left:auto}
+html.float .card .pv{font-size:12px;margin:0 0 8px}
+html.float .card .r3{gap:8px;font-size:11px}
+html.float .sdot.ok{box-shadow:0 0 8px rgba(52,211,153,.7)}
+html.float .stat-label{font-size:10.5px}
+/* 右下角拖拽柄：无边框透明窗没有系统拉边框，缩放全靠它（悬停卡片才显形） */
+#wrap{position:relative}
+.grip{display:none}
+html.float .grip{display:block;position:absolute;right:4px;bottom:4px;width:13px;height:13px;z-index:5;
+  cursor:nwse-resize;opacity:0;transition:opacity .2s;touch-action:none;
+  border-right:2px solid var(--secondary);border-bottom:2px solid var(--secondary);border-bottom-right-radius:5px}
+html.float #wrap:hover .grip{opacity:.45}
+html.float .grip:hover{opacity:.9 !important}
+
+/* ===== 球模式（html.float.ball）：收成一颗球，只显示今日 token =====
+   2026-09-24 水球换成「暗黑发光球」（参照 gemini-code demo：纯色球底 + sky 辉光脉动 + 悬停放大）。
+   ⚠️ 球**不用** -webkit-app-region:drag —— 那东西在 Windows 上是系统级命中测试（HTCAPTION），
+   鼠标事件到不了页面，click 会被整个吞掉（2026-09-20 实测：CDP 合成事件能点、真鼠标不行）。
+   拖动走 pointer 事件 + floatApi.dragBegin/dragBy（IPC 让壳挪窗口），点击与拖动按 4px 阈值分家。 */
+/* 球的大小只有这一个旋钮：--bs = 球本体直径。球体几何都写成 calc(var(--bs) * N / 116)，
+   N 是 116px 那版实测调出来的数值，改 --bs 就整球等比缩放（字号、按钮位置一起跟）。
+   ⚠️ 必须与壳同步：widget/main.js 的 BALL_SIZE = --bs + 24（body 四周各 12px 透明留白）。
+   只对页面不改壳：球会缩小但窗口不变，多出来的一圈透明区照旧吞鼠标点击（透明区不穿透），
+   看着像「球周围一圈点不动的死区」—— 所以 --bs 一动，壳那边要 npm pack + 全局重装才生效。 */
+html.float.ball{--bs:88px}
+#ball{display:none}
+html.float.ball header,html.float.ball #stats,html.float.ball #feed,html.float.ball .grip,html.float.ball #stale{display:none}
+/* 球的留白同卡片：12px（html.float body 那条已经给了，这里不另设）—— 阴影/辉光罩得住才不会被切平 */
+html.float.ball #wrap{background:none;border:none;box-shadow:none;overflow:visible;align-items:center;justify-content:center}
+/* 球体 = demo 的 neon-ball：实心 zinc-950 底 + sky→indigo→purple 渐变环（glass-border 同款
+   双背景技法，环宽 2px）。球比卡片更像个物件，用实心底不跟卡片的 80% 透明 —— 渐变环要实心底才压得住。
+   断连态的 .off 把渐变环换成红色；悬停放大 1.08（demo 是 1.10，88px 球在 112px 窗里 1.10 只剩 7px 边）。
+   入场 scale-in：卡片 ⇄ 球切换时球是「长出来」的，不是凭空闪现。 */
+html.float.ball #ball{display:flex;flex-direction:column;align-items:center;justify-content:center;
+  position:relative;width:var(--bs);height:var(--bs);border-radius:50%;
+  cursor:pointer;user-select:none;touch-action:none;
+  border:2px solid transparent;
+  background:linear-gradient(#09090b,#09090b) padding-box,
+    linear-gradient(135deg,#38bdf8,#6366f1 45%,#a855f7) border-box;
+  transition:transform .2s;
+  animation:ball-in .34s cubic-bezier(.3,1.4,.5,1)}
+@keyframes ball-in{from{opacity:0;transform:scale(.55)}to{opacity:1;transform:scale(1)}}
+html.float.ball #ball:hover{transform:scale(1.08)}
+/* ⚠️ 球的阴影/辉光都不画在 #ball 上 —— 元素自身带动画/过渡时 Chromium 走合成快路径，
+   box-shadow 会忽略 border-radius 画成方的（2026-09-20 白底实测锁定）。
+   所以挪给 #wrap 的两个圆形假影：::before 常驻接触影 + sky 辉光，::after 是 purple 辉光层 ——
+   两层同相 opacity 脉动（opacity 是合成属性，不踩上面那个坑）= demo 的 neon-glow 双色呼吸。
+   demo 原版 blur 到 25/50px，这里压到 10/12px：透明窗留白就 12px，超出的部分会被窗口边切平。
+   接触影参数不变：88px 球最外一圈 ≈ 8.3px，仍 < 12px。
+   background/filter 必须显式归 none —— 卡片态的弥散光晕也写在这两个伪元素上，同特异性靠后覆盖，
+   不重置的话 160px 的模糊圆斑会漏到球后面。 */
+html.float.ball #wrap::before{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:var(--bs);height:var(--bs);border-radius:50%;pointer-events:none;background:none;filter:none;
+  box-shadow:0 calc(var(--bs) * 3 / 116) calc(var(--bs) * 14 / 116) rgba(0,0,0,.45),
+             0 calc(var(--bs) * 1 / 116) calc(var(--bs) * 3 / 116) rgba(0,0,0,.3),
+             0 0 10px rgba(56,189,248,.5);
+  animation:glow-breathe 2.5s ease-in-out infinite}
+html.float.ball #wrap::after{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+  width:var(--bs);height:var(--bs);border-radius:50%;pointer-events:none;background:none;filter:none;
+  box-shadow:0 0 12px 2px rgba(168,85,247,.42);
+  animation:glow-breathe 2.5s ease-in-out infinite}
+@keyframes glow-breathe{0%,100%{opacity:.45}50%{opacity:1}}
+/* 断连：渐变环换红（background 两层一起换，padding-box 的实心底不动） */
+html.float.ball #ball.off{background:linear-gradient(#09090b,#09090b) padding-box,
+  linear-gradient(135deg,rgba(248,113,113,.9),rgba(248,113,113,.45)) border-box}
+/* 数字整块正中：水球时代要躲水线才往上提 14%，发光球没有水线。z-index 压着辉光假影。 */
+#ball .ball-num{display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:2}
+/* 数字纯白 + glow-text；24/116 这档 88px 球上约 18px，「9999.9万」这种 7 字串约 76px、球内宽 84px 放得下。
+   transform 过渡是给悬停放大用的（见下面 hover 那条） */
+#ball .ball-num b{color:#fff;font-size:calc(var(--bs) * 24 / 116);font-weight:800;letter-spacing:.2px;font-variant-numeric:tabular-nums;
+  text-shadow:0 0 10px rgba(255,255,255,.5);transition:transform .2s ease}   /* demo 的 glow-text */
+/* 悬停时数字再放大一档（球本体那条 1.08 之外叠加），移开收回 —— 增量角标挂在 b 里，跟着一起缩 */
+html.float.ball #ball:hover .ball-num b{transform:scale(1.15)}
+/* ⚠️ 副标题规则必须点名 #ball-sub，不能用 .ball-num span —— 大数字本体也是 span（#ball-num 在 b 里），
+   同特异性且这条在后，会把大数字盖成 9px 天空蓝（2026-09-24 实测踩中：壳里球数一直是小的蓝字）。
+   max() 里的下限是给「球缩到 88px」这一档留的：纯按比例副标题只剩 7.6px、按钮只剩 9px，
+   前者读不清、后者点不准。数值取的是「最小也能看/能点」的那一档，不是审美值。 */
+#ball-sub{color:#38bdf8;font-size:max(9px,calc(var(--bs) * 10 / 116));margin-top:calc(var(--bs) * 3 / 116);letter-spacing:.4px}
+#ball .ball-btn{position:absolute;top:calc(var(--bs) * 8 / 116);z-index:3;border:none;background:none;cursor:pointer;
+  color:rgba(255,255,255,.85);font-size:max(11px,calc(var(--bs) * 12 / 116));line-height:1;padding:2px;opacity:0;transition:opacity .2s;
+  -webkit-app-region:no-drag}
+#ball:hover .ball-btn{opacity:.9}
+#ball .bopen{left:calc(var(--bs) * 12 / 116)} #ball .bclose{right:calc(var(--bs) * 12 / 116)}
+
+/* ===== 卡片 ⇄ 球的形变动画（「从哪来回哪去」）=====
+   窗口尺寸只能瞬移（壳 setBounds 一步跳、锚定右下角），形变全在页面里做，把窗口跳变藏进
+   「前后两帧画面重合」的瞬间：
+   收球（morph-out）：窗口还是卡片大小时，#wrap 朝球心缩成一个点并淡出，到位同帧才换 class +
+     叫壳缩窗 —— 紧跟着真球自带的 ball-in 在那个点弹出，看着就是卡片坍缩成了球。
+   回卡片（morph-in）：壳先把窗口放大，#wrap 从球心那个点长回整张卡。
+   球心位置：球窗 112px、球居中 ⇒ 距窗口右/下边各 56px；#wrap 比窗口小一圈 body 留白 12px，
+   换算成 #wrap 的 transform-origin 就是 calc(100% - 44px)。 */
+html.float.morph-out #wrap{transform-origin:calc(100% - 44px) calc(100% - 44px);
+  animation:wrap-to-ball .26s ease-in forwards}
+html.float.morph-in #wrap{transform-origin:calc(100% - 44px) calc(100% - 44px);
+  animation:wrap-from-ball .3s cubic-bezier(.3,1.3,.5,1)}
+@keyframes wrap-to-ball{to{transform:scale(.12);border-radius:50%;opacity:0}}
+@keyframes wrap-from-ball{from{transform:scale(.12);border-radius:50%;opacity:0}}
+/* 回卡片的预藏帧：窗口放大锚定右下角 ⇒ 左上角往左上挪，Windows 在新帧交付前会把
+   旧窗口的最后一帧钉在新窗口**左上角**重放 —— 不先把球藏起来，用户就会看到球在左上闪一下
+   （2026-09-28 实测）。opacity 挂在 #wrap 上连同两个辉光伪元素一起藏。 */
+html.float.morph-pre #wrap{opacity:0}
+/* 水球整套（液面/波浪/水色档/满球气泡）2026-09-24 移除：换成 gemini-code demo 的暗黑发光球。
+   卡通（表情脸/托球小手/☺开关）更早一轮（2026-09-23）已删。 */
+
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--regular);font:13px/1.55 "PingFang SC",Arial,"Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;overflow:hidden}
+/* #wrap 是唯一的高度容器：普通模式它就是整张页面；悬浮模式它是那张圆角卡片 */
+#wrap{height:100%;display:flex;flex-direction:column}
+/* 与主页同一条滚动条纪律：标准属性 + 悬停显形（为什么不用 ::-webkit-scrollbar 做显隐，见主页 CSS 那段实测注释）。
+   悬浮卡片例外：窗口窄，显形那条滚动条会占掉右侧一条宽度，日志列表左右不对称 —— 这里彻底藏掉
+   （scrollbar-width:none 连布局宽度一起归零），滚轮/拖拽照常滚，位置感交给卡片内容自己。 */
+html.float *{scrollbar-width:none}
+html.float *::-webkit-scrollbar{width:0;height:0;display:none}
+
+/* demo 的 font-mono 口径：数字/时间/摘要/明细行走等宽（汉字标签自动回退系统中文字体，不受这条影响） */
+html.float .stat-big,html.float .stat-sub,html.float .time,html.float .model,
+html.float .card .pv,html.float .card .r3,html.float .ball-num{font-family:ui-monospace,SFMono-Regular,Consolas,Menlo,monospace}
+
+/* ===== 顶栏 ===== */
+header{display:flex;align-items:center;gap:6px;padding:8px 10px;border-bottom:1px solid var(--border-light);flex:none}
+.dot{width:8px;height:8px;border-radius:50%;background:#c9cdd4;flex:none;transition:background .3s}
+.dot.on{background:var(--green);animation:dot-pulse 2.4s ease-out infinite}
+.dot.off{background:var(--red);animation:none}
+/* 连接灯的呼吸脉冲：绿光圈每 2.4s 荡开一次。两个色档分开写（亮/暗两套 --green），
+   不用 color-mix —— widget-runtime 里的 Electron 版本不归我们控，少赌一个特性。 */
+@keyframes dot-pulse{0%{box-shadow:0 0 0 0 rgba(24,160,88,.35)}70%{box-shadow:0 0 0 6px rgba(24,160,88,0)}
+  100%{box-shadow:0 0 0 0 rgba(24,160,88,0)}}
+html.float .dot.on{animation-name:dot-pulse-f}
+/* float 档在脉冲外圈之外再叠一层常驻光晕（demo 的 shadow-[0_0_8px_#34d399]） */
+@keyframes dot-pulse-f{0%{box-shadow:0 0 8px rgba(52,211,153,.7),0 0 0 0 rgba(52,211,153,.4)}
+  70%{box-shadow:0 0 8px rgba(52,211,153,.7),0 0 0 6px rgba(52,211,153,0)}
+  100%{box-shadow:0 0 8px rgba(52,211,153,.7),0 0 0 0 rgba(52,211,153,0)}}
+.title{font-weight:700;color:var(--text);font-size:13px}
+header .sp{flex:1}
+header a,header button{border:none;background:none;color:var(--placeholder);cursor:pointer;font-size:12px;
+  padding:2px 6px;border-radius:5px;text-decoration:none;font-family:inherit;line-height:1.4}
+header a:hover,header button:hover{background:var(--panel);color:var(--text)}
+
+/* ===== 用量汇总 ===== */
+#stats{flex:none;padding:8px 10px;border-bottom:1px solid var(--border-light);background:var(--panel)}
+.stat-row{display:flex;align-items:baseline;gap:8px}
+.stat-row+.stat-row{margin-top:4px}
+.stat-label{font-size:11px;color:var(--placeholder);flex:none;width:28px}
+.stat-big{font-size:19px;font-weight:800;color:var(--text);font-variant-numeric:tabular-nums;line-height:1.2}
+.stat-sub{font-size:11px;color:var(--secondary);font-variant-numeric:tabular-nums}
+.stat-sub b{font-weight:600}
+/* 「N 条」收成 demo 那种药丸角标：float 下是 sky 字 + sky 底 + sky 描边，亮色模式沿用灰底 */
+#today-sub{background:var(--panel);border:1px solid var(--border-light);border-radius:999px;
+  padding:1px 8px;color:var(--placeholder)}
+html.float #today-sub{color:#38bdf8;background:rgba(56,189,248,.1);border-color:rgba(56,189,248,.3)}
+.tin{color:var(--primary)} .tout{color:var(--orange)} .tcache{color:var(--purple)}
+#row-credits{display:none}   /* 积分条件行：paintStats 按「累计有积分」放开，默认收起 */
+/* 积分是次要信息：比「今天」大数小一档、降亮度，层级拉开（float 模式下 15px → 13px） */
+html.float #row-credits .stat-big{font-size:13px;font-weight:700;color:#fcd34d}   /* demo：积分 amber-300 */
+/* 「+xxx」增量角标：统计区那份从大数左上往右上飘（rise-fade-y，transform 方案）；
+   球上那份从数字下缘往上飘（rise-fade，bottom 方案）—— 它要靠 translateX(-50%) 居中，
+   keyframes 不能动 transform，所以两份各走各的 keyframes。
+   统计区定位行太挤（大数+tokens+「N 条」），角标放左/右都会压字（2026-09-23 实测两版都重叠），
+   只能往数字上方飘。锚用外层 #today-total 而不是 #today-num：数字有滚动动画（tweenNum 在重写
+   today-num 的 textContent），角标挂数字里会被滚动帧抹掉。 */
+#today-total,#ball-total{position:relative}
+.token-pop{position:absolute;white-space:nowrap;pointer-events:none;
+  font-size:11px;font-weight:700;color:var(--green);font-variant-numeric:tabular-nums}
+#today-total .token-pop{left:2px;top:-13px;animation:rise-fade-y 1.6s ease forwards}
+#ball .token-pop{left:50%;bottom:-16px;font-size:10px;transform:translateX(-50%);
+  animation:rise-fade 1.6s ease forwards}
+@keyframes rise-fade{from{opacity:1;bottom:0}to{opacity:0;bottom:14px}}
+@keyframes rise-fade-y{from{opacity:1;transform:translateY(0)}to{opacity:0;transform:translateY(-12px)}}
+
+/* ===== 卡片列表 ===== */
+#feed{flex:1;overflow-y:auto;padding:6px 8px 10px}
+.card{background:var(--card);border:1px solid var(--border-light);border-radius:12px;padding:6px 8px;margin-bottom:6px;
+  transition:border-color .2s,background-color .2s;animation:pop .3s cubic-bezier(.3,1.35,.5,1)}
+.card:hover{border-color:var(--border)}
+/* demo 的悬停：底色变深（bg-zinc-800/80）+ 描边转 sky —— float 深色下照这个口径，亮色系照旧只换边框 */
+html.float .card:hover{background:rgba(255,255,255,.09);border-color:rgba(56,189,248,.5)}
+@keyframes pop{from{opacity:0;transform:translateY(-6px) scale(.98)}to{opacity:1;transform:none}}
+/* 球 ⇄ 卡片切换时，卡片的三个区块淡入归位 —— 球模式里它们是 display:none，
+   切回来时 display 恢复会重播 animation，白捡一个入场（不用 JS 配合）。 */
+html.float header,html.float #stats,html.float #feed{animation:card-in .26s ease}
+@keyframes card-in{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.card .r1{display:flex;align-items:center;gap:6px;min-width:0}
+.sdot{width:7px;height:7px;border-radius:50%;flex:none}
+.sdot.ok{background:var(--green)} .sdot.error{background:var(--red)} .sdot.aborted{background:var(--orange)} .sdot.other{background:#c9cdd4}
+.time{color:var(--placeholder);font-size:11px;font-variant-numeric:tabular-nums;flex:none}
+.agent{font-weight:700;color:var(--text);font-size:12px;flex:none}
+.model{color:var(--secondary);font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+/* demo 的型号徽标：灰底描边小胶囊。float 下不再 flex:1 撑满 —— 撑满的胶囊像条横杠，收成自适应宽度 */
+html.float .model{flex:none;max-width:50%;color:#d4d4d8;background:rgba(255,255,255,.07);
+  border:1px solid var(--border-light);border-radius:4px;padding:0 4px;font-size:10px}
+.card .pv{color:var(--regular);font-size:12px;margin-top:2px;
+  display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden;word-break:break-all}
+.card .r3{display:flex;gap:8px;margin-top:3px;font-size:11px;color:var(--secondary);font-variant-numeric:tabular-nums}
+.card .r3 .dur{margin-left:auto;color:var(--placeholder)}
+/* 异常条目的左侧色条：7px 小点在卡片流里扫不出来（主面板是整卡红左边条，这里空间小，收成 inset 竖条）。
+   用 inset box-shadow 不用 border-left —— border 会挤内容盒，状态从 ok 变 error 时整卡跳 2px。 */
+.card[data-st=error]{box-shadow:inset 2px 0 0 var(--red)}
+.card[data-st=aborted]{box-shadow:inset 2px 0 0 var(--orange)}
+.nollm{color:var(--placeholder);font-style:italic}
+#empty{color:var(--placeholder);text-align:center;padding:24px 0;font-size:12px}
+#stale{display:none;background:var(--red);color:#fff;font-size:12px;text-align:center;padding:3px;flex:none}
+</style>
+</head>
+<body>
+<div id="wrap">
+<div id="stale">服务已换新版本，正在刷新…</div>
+<header>
+  <span class="dot" id="dot" title="未连接"></span>
+  <span class="title">Agent 实况</span>
+  <span class="sp"></span>
+  <button id="rescan" class="hd-act" title="立刻重扫一遍日志目录">重扫</button>
+  <a href="/" target="_blank" class="hd-act" title="在浏览器里打开完整面板">面板 ↗</a>
+  <button class="winbtn" id="wmin" title="收成小球">○</button>
+  <button class="winbtn" id="wclose" title="关闭">✕</button>
+</header>
+<!-- 「今天」拆两行：大数+条数 / 入出缓（空 label 是 28px 占位，明细对齐大数）。
+     第三行 qoder 积分是条件行：累计有积分才显示 —— 有积分三行、没积分两行；显隐归 paintStats。 -->
+<div id="stats">
+  <div class="stat-row">
+    <span class="stat-label">今天</span>
+    <span class="stat-big" id="today-total"><span id="today-num">—</span> tokens</span>
+    <span class="stat-sub" id="today-sub"></span>
+  </div>
+  <div class="stat-row">
+    <span class="stat-label"></span>
+    <span class="stat-sub" id="today-detail"></span>
+  </div>
+  <div class="stat-row" id="row-credits">
+    <span class="stat-label">积分</span>
+    <span class="stat-big" id="credit-val">—</span>
+    <span class="stat-sub" id="credit-sub"></span>
+  </div>
+</div>
+<div id="feed"><div id="empty">等待数据…</div></div>
+<div class="grip" id="grip" title="拖动调整大小；Ctrl+滚轮缩放内容"></div>
+<div id="ball">
+  <div class="ball-num"><b id="ball-total"><span id="ball-num">—</span></b><span id="ball-sub">—</span></div>
+  <button class="ball-btn bopen" id="bopen" title="打开完整面板">↗</button>
+  <button class="ball-btn bclose" id="bclose" title="关闭">✕</button>
+</div>
+</div>
+
+<script>
+'use strict';
+const PAGE_BUILD = document.querySelector('meta[name=agent-log-build]').content;
+// 悬浮模式：Electron 壳带 ?float=1 进来，切深色玻璃皮；窗控按钮走 preload 暴露的 floatApi
+const FLOAT = new URLSearchParams(location.search).has('float');
+if (FLOAT) document.documentElement.classList.add('float');
+const $ = id => document.getElementById(id);
+const feed = $('feed');
+
+// ---- 数字格式化：亿/万 分档，四位以内原样（桌面小卡片，tabular-nums 防抖） ----
+function fmt(n) {
+  n = n || 0;
+  if (n >= 1e8) return (n / 1e8).toFixed(2) + '亿';
+  if (n >= 1e4) return (n / 1e4).toFixed(1) + '万';
+  return String(n);
+}
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+// 千分位精确值：fmt() 的万/亿分档好读但抹尾数 —— 「实际 token 数」用它（统计区 sub 行 + 各处悬停 title）
+const fmtExact = n => Math.round(n || 0).toLocaleString('en-US');
+const two = n => String(n).padStart(2, '0');
+function fmtTime(t) {
+  const d = new Date(t), now = new Date();
+  const hm = two(d.getHours()) + ':' + two(d.getMinutes()) + ':' + two(d.getSeconds());
+  return (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate())
+    ? hm : (d.getMonth() + 1) + '/' + d.getDate() + ' ' + hm;
+}
+const fmtDur = ms => !ms ? '' : ms >= 60000 ? (ms / 60000).toFixed(1) + 'm' : (ms / 1000).toFixed(1) + 's';
+
+// ---- 数据：byId 是唯一事实源；CAP 限制渲染条数（map 本身也不无限长，超出裁掉最老的） ----
+// CAP 跟窗口高度走（2026-09-23）：写死 5 的时候把窗口拉高，底下三分之一是空白。
+// 一张卡 float 模式下约 100px（2026-09-24 对齐 demo 三段式布局后实测，含 10px 卡距；旧紧凑布局是 64px）；
+// 下限 3（默认 404 高的档刚好 ~3 张，同 demo max-h-320 露 3.2 张的观感），上限 20。球模式 feed 是 display:none
+// （clientHeight=0 → 落回下限 3），切回卡片时 resize 会重算。
+let CAP = 3;
+function syncCap() {
+  const c = Math.max(3, Math.min(20, Math.floor((feed.clientHeight - 8) / 100)));
+  if (c === CAP) return;
+  CAP = c;
+  fetchFeed();   // 变多要补拉（手里的条数可能不够）；变少 render 自己裁
+}
+window.addEventListener('resize', syncCap);
+const byId = new Map();
+
+// ---- 卡片 DOM 按 id 复用（增量渲染）----
+// 之前一整段 innerHTML 重建：每批 SSE 更新都把 40 张卡连 DOM 一起换掉，.card 的 pop 入场动画
+// 跟着全部重播 —— 列表整片闪烁。现在只有新条目才创建元素（才播入场动画），已有条目原地改字段；
+// 排序用 insertBefore 挪节点，且「已在位」的节点不动（挪动会重启动画，能省则省）。
+const els = new Map();   // id -> .card 元素
+
+const stOf = e => e.status === 'ok' ? 'ok' : e.status === 'error' ? 'error' : e.status === 'aborted' ? 'aborted' : 'other';
+function cardHTML(e) {
+  const st = stOf(e);
+  const model = (e.models && e.models[0]) || '';
+  const pv = e.preview ? esc(e.preview) : '<span class="nollm">（无对话内容）</span>';
+  // qoder 的 token 恒 0、真实用量是 credits（见 parsers/claude.mjs）——无 token 数据就不摆一排 0，只留积分
+  const hasTok = !!(e.tin || e.tout || e.tcache);
+  return '<div class="r1"><span class="sdot ' + st + '"></span>'
+    + '<span class="time">' + fmtTime(e.time) + '</span>'
+    + '<span class="agent">' + esc(e.agent) + '</span>'
+    + '<span class="model">' + esc(model) + '</span></div>'
+    + '<div class="pv">' + pv + '</div>'
+    + '<div class="r3">'
+    + (hasTok ? '<span class="tin" title="输入 ' + fmtExact(e.tin) + '">输入 ' + fmt(e.tin) + '</span>'
+      + '<span class="tout" title="输出 ' + fmtExact(e.tout) + '">输出 ' + fmt(e.tout) + '</span>'
+      + (e.tcache ? '<span class="tcache" title="缓存 ' + fmtExact(e.tcache) + '">缓存 ' + fmt(e.tcache) + '</span>' : '') : '')
+    + (e.credits ? '<span>积分 ' + e.credits.toFixed(2) + '</span>' : '')
+    + '<span class="dur">' + fmtDur(e.dur) + '</span>'
+    + '</div>';
+}
+
+function render() {
+  const list = [...byId.values()].sort((a, b) => (b.time || 0) - (a.time || 0));
+  for (const e of list.slice(CAP)) byId.delete(e.id);
+  const show = list.slice(0, CAP);
+  // 先清掉已经不在数据里的元素（被 CAP 挤出 / 服务端 remove）
+  for (const [id, el] of els) if (!byId.has(id)) { el.remove(); els.delete(id); }
+  $('empty').style.display = show.length ? 'none' : '';
+  if (!show.length) { $('empty').textContent = '暂无日志'; return; }
+  // 从老到新逐个「插到 ref 前面」：新条目落到最前；已在正确位置的节点一次都不挪
+  let ref = null;
+  for (let i = show.length - 1; i >= 0; i--) {
+    const e = show[i];
+    let el = els.get(e.id);
+    if (!el) {
+      el = document.createElement('div');
+      el.className = 'card';
+      els.set(e.id, el);
+    }
+    const f = cardHTML(e);
+    if (el._f !== f) { el.innerHTML = f; el._f = f; }   // 字段会补全（如进行中→完成），变了才重写
+    const st = stOf(e);
+    if (el.dataset.st !== st) el.dataset.st = st;       // 状态也会变（进行中→失败），色条跟着换
+    // 守卫必须带 parentNode：游离新元素的 nextSibling 是 null，首轮 ref 也是 null，
+    // 只比 nextSibling 会把它误判成「已在位」跳过插入，下一轮还拿游离节点当参照直接抛异常
+    if (el.parentNode !== feed || el.nextSibling !== ref) feed.insertBefore(el, ref);
+    ref = el;
+  }
+}
+
+// ---- 汇总：今天 + 累计（/api/models 的 totals，口径与主面板「按模型」页完全一致） ----
+function paintStats(today, all) {
+  // 今天拆两行（大数+条数 / 入出缓）；积分行是条件行：累计有积分才出现，没积分整块两行（见 #stats 结构注释）。
+  // 累计 token 仍只进完整面板 —— all 在这里只为 qoder 积分服务。
+  if (today) {
+    tweenNum($('today-num'), today.total);
+    // 条数行只给条数 —— 精确 token 值太长，挤在条数后面视觉噪音，悬停 title 里还留着
+    $('today-sub').innerHTML = '<b>' + today.count + '</b> 条';
+    $('today-total').title = '今日实际 ' + fmtExact(today.total) + ' tokens';
+    $('today-detail').innerHTML =
+      '<span class="tin" title="输入 ' + fmtExact(today.tin) + '">输入 ' + fmt(today.tin) + '</span>'
+      + ' · <span class="tout" title="输出 ' + fmtExact(today.tout) + '">输出 ' + fmt(today.tout) + '</span>'
+      + ' · <span class="tcache" title="缓存 ' + fmtExact(today.tcache) + '">缓存 ' + fmt(today.tcache) + '</span>';
+  }
+  if (all) {
+    const cr = (all.credits || 0);
+    $('row-credits').style.display = cr ? 'flex' : 'none';
+    if (cr) {
+      $('credit-val').textContent = ((today && today.credits) || 0).toFixed(2);
+      $('credit-sub').innerHTML = '累计 ' + cr.toFixed(2);
+    }
+  }
+}
+// 「+xxx」增量角标：锚元素（#today-total / #ball-total）里浮一个增量、上飘淡出后自删；
+// 每次先清旧的 —— 连续更新时只留最新一个。数字本体走 today-num / ball-num 子节点，
+// textContent 刷新不会把角标抹掉。
+function popDelta(anchor, delta) {
+  if (!(delta > 0)) return;
+  for (const p of anchor.querySelectorAll('.token-pop')) p.remove();
+  const s = document.createElement('span');
+  s.className = 'token-pop';
+  s.textContent = '+' + fmt(delta);
+  anchor.appendChild(s);
+  s.addEventListener('animationend', () => s.remove());
+}
+let lastTotal = null;   // 上一次「今天」total；null = 首帧不报增量（跨天清零走 delta>0 的闸）
+// 数字滚动：值变化时 480ms 缓动从旧值滚到新值（首帧从 0 滚起，算开屏入场）。
+// 只重写元素自己的 textContent —— 增量角标挂在父节点（today-total / ball-total）上，不会被滚动帧抹掉。
+// el._v 是上一次的目标值：新一轮 fetch 到了旧动画没跑完，从旧目标接着滚，不倒退。
+function tweenNum(el, to) {
+  to = Math.round(to || 0);
+  const from = el._v || 0;
+  el._v = to;
+  cancelAnimationFrame(el._raf);
+  if (from === to) { el.textContent = fmt(to); return; }
+  const t0 = performance.now();
+  const tick = t => {
+    const k = Math.min(1, (t - t0) / 480);
+    el.textContent = fmt(Math.round(from + (to - from) * (1 - Math.pow(1 - k, 3))));
+    if (k < 1 && el._v === to) el._raf = requestAnimationFrame(tick);
+  };
+  el._raf = requestAnimationFrame(tick);
+}
+async function fetchStats() {
+  try {
+    const [t, a] = await Promise.all([
+      fetch('/api/models?range=today').then(r => r.json()),
+      fetch('/api/models').then(r => r.json()),
+    ]);
+    paintStats(t.ok && t.totals, a.ok && a.totals);
+    if (t.ok && t.totals) {
+      tweenNum($('ball-num'), t.totals.total);
+      $('ball-total').title = '今日实际 ' + fmtExact(t.totals.total) + ' tokens';
+      $('ball-sub').textContent = t.totals.count + ' 条';
+      // 今天 token 涨了 → 大数和球各浮一个「+xxx」；跨天清零（负数）不打扰
+      if (lastTotal != null && t.totals.total > lastTotal) {
+        popDelta($('today-total'), t.totals.total - lastTotal);
+        popDelta($('ball-total'), t.totals.total - lastTotal);
+      }
+      lastTotal = t.totals.total;
+    }
+  } catch { /* 服务短暂不可用时下轮事件会再拉 */ }
+}
+let statsTimer = 0;
+function scheduleStats() { clearTimeout(statsTimer); statsTimer = setTimeout(fetchStats, 600); } // 一批更新合并成一次拉取
+
+async function fetchFeed() {
+  try {
+    const j = await fetch('/api/snapshot?limit=' + CAP).then(r => r.json());
+    byId.clear();
+    for (const e of j.entries || []) byId.set(e.id, e);
+    render();
+  } catch { /* 同上 */ }
+}
+
+// ---- SSE：新条目实时进来。断线 EventSource 自己重连，灯色跟着 readyState 走 ----
+const dot = $('dot');
+function connect() {
+  const es = new EventSource('/api/events');
+  es.onopen = () => { dot.className = 'dot on'; dot.title = '实时连接中 · 点击收成小球'; $('ball').classList.remove('off'); };
+  es.onerror = () => { dot.className = 'dot off'; dot.title = '连接断开，重试中…'; $('ball').classList.add('off'); };
+  es.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    if (m.type === 'hello') {
+      // 服务在背后被重启换版：这张常驻卡片自己刷新拿新页面（主页的红条方案在小卡片上没有地方放）
+      if (m.build && m.build !== PAGE_BUILD) { $('stale').style.display = ''; location.reload(); return; }
+      fetchFeed(); fetchStats();
+    } else if (m.type === 'update') {
+      for (const e of m.entries || []) byId.set(e.id, e);
+      render(); scheduleStats();
+    } else if (m.type === 'remove') {
+      for (const id of m.ids || []) byId.delete(id);
+      render(); scheduleStats();
+    } else if (m.type === 'resync') {
+      fetchFeed(); fetchStats();
+    }
+  };
+}
+
+$('rescan').onclick = () => { fetch('/api/snapshot?scan=1&limit=1').catch(() => {}); };
+// 悬浮模式的窗控：preload 注入了 floatApi；浏览器里这两个按钮根本不渲染（.winbtn 只在 float 下显示）。
+// 注意没有「最小化」：skipTaskbar 的窗口最小化后没有入口叫回来 —— 「缩小」就是收球（见下面 FLOAT 块）。
+$('wclose').onclick = () => { if (window.floatApi) window.floatApi.hide(); };
+
+// 悬浮模式的两个缩放通道：
+//   1) 右下角拖拽柄改窗口大小 —— 无边框透明窗没有系统拉边框，自己从拖动起点算目标尺寸报给壳（壳负责夹紧）
+//   2) Ctrl+滚轮缩放内容（Electron 无边框窗不管这套默认手势，自己拦）
+// 卡片 ⇄ 小球：点顶栏小球收成一颗球（只显示今日 token），点球回来。
+// 窗口尺寸切换在壳里（floatApi.setMode，锚定右下角）；页面换 class + 播形变动画
+// （morph-out / morph-in，见 CSS「从哪来回哪去」那段），窗口跳变藏进形变缝里。
+// 上次以球模式关的，壳会用 &mode=ball 打开，这里照 URL 落 initial class。
+// mode/applyMode 放在 floatApi 守卫**外面**：浏览器直接开 /widget?float=1&mode=ball 也能预览球
+// （没有壳只是切不了窗口尺寸，球的样式照样渲染），调球的样式不用起 Electron。
+let mode = new URLSearchParams(location.search).get('mode') === 'ball' ? 'ball' : 'card';
+const applyMode = () => document.documentElement.classList.toggle('ball', mode === 'ball');
+if (FLOAT) applyMode();
+
+if (FLOAT && window.floatApi) {
+  const grip = $('grip');
+  grip.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    const sx = e.screenX, sy = e.screenY, sw = window.innerWidth, sh = window.innerHeight;
+    // ⚠️ 这里原来有三个洞，叠起来就是「没人碰它、卡片却自己一路缩到 230×160 下限，顶栏挤成一团」
+    //   （2026-09-24 实测，窗口量到 230x263；用户确认收小前没点过 ○）：
+    //   ① up() 只摘 window 上的监听，**grip 上那份 pointermove 永远留着** —— 之后鼠标只是划过这个
+    //      13px 的柄，就会拿「最早那次按下」的基准重设一次窗口尺寸；
+    //   ② move 不看 buttons，于是「划过」与「按住拖动」在它眼里是一回事；
+    //   ③ 每按一次就多叠一份监听。
+    // 现在：一次按下 = 一对监听，抬手 / 取消 / 失焦都成对摘干净；且真鼠标移动必须按着左键才算拖动。
+    let live = true;
+    const move = ev => {
+      if (!live) return;
+      // isTrusted 那半是为了不挡 CDP 合成事件（自动验证时发的 PointerEvent 没有活动指针）
+      if (ev.isTrusted && ev.buttons !== undefined && !(ev.buttons & 1)) return;
+      window.floatApi.resize(sw + ev.screenX - sx, sh + ev.screenY - sy);
+    };
+    const up = () => {
+      if (!live) return;
+      live = false;
+      for (const t of [grip, window]) {
+        t.removeEventListener('pointermove', move);
+        t.removeEventListener('pointerup', up);
+        t.removeEventListener('pointercancel', up);
+      }
+      window.removeEventListener('blur', up);
+    };
+    // 合成事件（CDP 验证用）没有活动指针，setPointerCapture 会抛 —— 能捕获就捕获，不行靠 window 监听兜底
+    try { grip.setPointerCapture(e.pointerId); } catch { /* 有 window 兜底就够 */ }
+    for (const t of [grip, window]) {
+      t.addEventListener('pointermove', move);
+      t.addEventListener('pointerup', up);
+      t.addEventListener('pointercancel', up);
+    }
+    // 在窗口外抬手时 pointerup 可能根本不进来（透明无边框窗 + 系统级拖区更容易）—— 失焦也当抬手
+    window.addEventListener('blur', up);
+  });
+  window.addEventListener('wheel', e => {
+    if (!e.ctrlKey || mode === 'ball') return;  // 球模式禁用内容缩放：窗口锁死 112px，放大只会把球裁掉
+    e.preventDefault();
+    window.floatApi.zoom(e.deltaY < 0 ? 0.1 : -0.1);
+  }, { passive: false });
+
+  // 收球：先播 #wrap 缩进球心的形变（此刻窗口还是卡片大小），到位同帧换 class + 叫壳缩窗。
+  // morphing 期间重复点 ○ / 状态灯 / 球都吞掉，不打断半截动画。
+  let morphing = false;
+  const MORPH_OUT_MS = 240, MORPH_IN_MS = 330;
+  const enterBall = () => {
+    if (morphing || mode === 'ball') return;
+    morphing = true;
+    document.documentElement.classList.add('morph-out');
+    setTimeout(() => {
+      document.documentElement.classList.remove('morph-out');
+      mode = 'ball'; applyMode();
+      window.floatApi.setMode('ball');
+      morphing = false;
+    }, MORPH_OUT_MS);
+  };
+  // 回卡片：窗口放大是瞬移，顺序得倒过来 —— 先叫壳放大，等 resize 落定（窗口已是卡片尺寸）
+  // 页面才换 class，#wrap 从球心长回整张卡：形变发生在新窗口里，不是在 112px 球窗里硬撑。
+  // 但直接放大会把「旧球窗的最后一帧」钉在新窗口左上角重放一帧（球在左上闪一下）——
+  // 所以先加 morph-pre 把球连同辉光藏掉，等两帧确认合成器送出的已是全透明，才叫壳放大。
+  // 代价是几十 ms 的空窗（球先没、卡片再从原地长出来），比左上闪球干净。
+  // resize 判定用「宽度涨过球窗的 1.5 倍」而不是定值：Ctrl+滚轮缩放过的内容 CSS px 会跟窗口物理 px 错开。
+  // resize 等不到（壳异常）有 600ms 兜底直接换皮，不会永远卡在球里。
+  const expandCard = () => {
+    if (morphing || mode !== 'ball') return;
+    morphing = true;
+    const root = document.documentElement;
+    root.classList.add('morph-pre');
+    const ballW = window.innerWidth;
+    let done = false;
+    const finish = grew => {
+      if (done) return;
+      done = true;
+      window.removeEventListener('resize', onResize);
+      root.classList.remove('morph-pre');   // morph-in 的 from{opacity:0} 接住，不会闪回可见
+      mode = 'card'; applyMode();
+      if (grew) {   // 兜底路径窗没动就不播形变：在 112px 球窗里播展开只会看到一闪
+        root.classList.add('morph-in');
+        setTimeout(() => { root.classList.remove('morph-in'); morphing = false; }, MORPH_IN_MS);
+      } else morphing = false;
+    };
+    const onResize = () => { if (window.innerWidth > ballW * 1.5) finish(true); };
+    window.addEventListener('resize', onResize);
+    requestAnimationFrame(() => requestAnimationFrame(() => window.floatApi.setMode('card')));
+    setTimeout(() => finish(false), 600);
+  };
+  dot.style.cursor = 'pointer';
+  dot.title = '收成小球';
+  dot.onclick = enterBall;
+  $('wmin').onclick = enterBall;   // 「缩小」= 收球，不做真最小化（skipTaskbar 的窗口最小化后叫不回来）
+  $('bopen').onclick = e => { e.stopPropagation(); window.open('/', '_blank'); };
+  $('bclose').onclick = e => { e.stopPropagation(); window.floatApi.hide(); };
+
+  // 球的拖动 + 点击：整球不设系统拖区（那样 click 会被吞），自己按 4px 阈值分家 ——
+  // 按住移动超阈值 = 拖（IPC 报增量，壳挪窗口）；原地松开 = 点击（回卡片模式）。
+  const ball = $('ball');
+  ball.addEventListener('pointerdown', e => {
+    if (e.target.closest('.ball-btn')) return;   // 落在小按钮上不归球管
+    e.preventDefault();
+    const sx = e.screenX, sy = e.screenY;
+    let moved = false, live = true;
+    window.floatApi.dragBegin();
+    const move = ev => {
+      if (!live) return;
+      if (ev.isTrusted && ev.buttons !== undefined && !(ev.buttons & 1)) return;   // 同拖拽柄：没按着就不算拖
+      const dx = ev.screenX - sx, dy = ev.screenY - sy;
+      if (!moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+      moved = true;
+      window.floatApi.dragBy(dx, dy);
+    };
+    // 与拖拽柄同一类收口：pointerup 进不来（在窗口外抬手 / 系统吞了）时，move 会一直挂在 window 上，
+    // 之后每次鼠标移动都变成「拖球」—— 球会自己乱跑。抬手 / 取消 / 失焦都算结束，且只结束一次。
+    const up = () => {
+      if (!live) return;
+      live = false;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      window.removeEventListener('blur', up);
+      if (!moved) expandCard();   // 原地松开 = 点击 = 长回卡片（带形变动画）
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+    window.addEventListener('blur', up);
+  });
+
+  // 列表区拖拽整窗（2026-09-28 用户点名：原本只有顶栏能拖，列表区大得多、更好抓）。
+  // 不用 app-region:drag —— 那是系统级命中测试，卡片的悬停效果会整片死掉；
+  // 走和球同一路：pointer 增量报给壳，4px 阈值分开「按住拖」与「原地松开」（松开不做任何事，
+  // 列表本来就没有点击行为）。副作用：列表文字不可选中（user-select:none），要复制去面板页。
+  feed.addEventListener('pointerdown', e => {
+    if (mode === 'ball' || (e.button !== undefined && e.button !== 0)) return;  // 球模式 feed 本就隐藏；只认左键
+    const sx = e.screenX, sy = e.screenY;
+    let moved = false, live = true;
+    window.floatApi.dragBegin();
+    const move = ev => {
+      if (!live) return;
+      if (ev.isTrusted && ev.buttons !== undefined && !(ev.buttons & 1)) return;   // 没按着就不算拖
+      const dx = ev.screenX - sx, dy = ev.screenY - sy;
+      if (!moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+      moved = true;
+      window.floatApi.dragBy(dx, dy);
+    };
+    const up = () => {
+      if (!live) return;
+      live = false;
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
+      window.removeEventListener('blur', up);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
+    window.addEventListener('blur', up);
+  });
+}
+
+syncCap();   // 首拉前按窗口高度定 CAP（feed 此时已可量，clientHeight 会强制布局）
+fetchFeed(); fetchStats(); connect();
+</script>
+</body>
+</html>
