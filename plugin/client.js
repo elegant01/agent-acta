@@ -11,7 +11,8 @@ window.__ModuleLoader__.load({
     // 面板入口：由服务端**同源递出**面板 HTML（宿主前端在 dsh-app://app，只代理 /api/*，
     // 而 iframe 302 到 http 口是跨源、实测被拦成空白 —— 见 DSH-PLUGIN-PLAN.md §8.6 第七轮）。
     // 页面里的 /page/、/vendor/ 引用由服务端递送时翻译成 /api/agent-acta/asset?p=…，浏览器侧一行都不用改。
-    const PAGE_URL = '/api/agent-acta/entry';
+    // ?dsh=1 是给页面读的载体标记：iframe 的文档 URL 就是它，顶栏据此不渲染「悬浮卡片」（宿主里 /api/client 没注册）。
+    const PAGE_URL = '/api/agent-acta/entry?dsh=1';
 
     // 没有 icon 这个注册参数 —— 注册的组件本身就是侧栏那颗图标，宿主按 { size, active } 喂它。
     function PanelIcon({ size, active }) {

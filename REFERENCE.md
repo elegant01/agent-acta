@@ -1120,9 +1120,8 @@ dsh plugin --profile desktop list                                             # 
 | 在跑 | **代理**：入口/资产/API 全部转给那个服务，上游递出来的 HTML、JS、CSS 再过一遍 `rewriteRefs`（代理过来的面板若不改写，在 iframe 里照样白屏）；`/api/events` 走**流式**透传（缓冲整条流等于把实时推送做成轮询）；POST 的 body 要转出去，写操作才有效；转的时候 `host` 换成上游、剔掉 hop-by-hop 与 `content-length`。本机仍然只有它那一个扫描器 |
 | 没在跑 | 插件自己 `start({ mode:'hosted', listen:false })`：扫描 / 落索引 / SSE 心跳照跑，但不监听端口、不写 pid、不挂空闲自停 |
 
-CLI 中途退出时不自动接手，入口换成一小页带按钮的「命令行服务已退出」，点 `POST /api/agent-acta/takeover` 才起 hosted ——
-自动起可能和「用户又把 CLI 起回来」撞成两个写者，这个决定留给人做。上游不在时代理回 **502**（不是 500、也不把插件弄崩）。
-注册数因此是 **109** 条（`ROUTES − DENY + EXTRA + 静态`，EXTRA = 入口 / 资产 / 接手三条）。
+CLI 中途退出时插件**自己接手**（2026-10-09 改判）：`api`/`entry`/`asset` 三支每支都现判 —— 本机 hosted 已起就直接用，CLI 在跑就代理，两边都没有就 `startHosted()` 再接着用（用在途 promise 收口，SSE 重连 + 快照轮询 + 资产一起撞进来也只 start 一次）。原先这里是一页带按钮的「命令行服务已退出」，点 `POST /api/agent-acta/takeover` 才起 hosted，理由「自动起可能和用户又把 CLI 起回来撞成两个写者，这个决定留给人做」—— 但装载那一刻做的本来就是同一件事，拦在按钮上只是多一次点击，于是撤了。接手后 `local` 一直是 true，把 CLI 起回来也不会换回代理（要换回得重启 DSH）。上游不在时代理回 **502**（不是 500、也不把插件弄崩）。
+注册数因此是 **108** 条（`ROUTES − DENY + EXTRA + 静态`，EXTRA = 入口 / 资产两条）。时序验收在 `test/plugin-takeover-test.mjs`（假上游 → 关掉 → 下一条请求要递出真面板，不是说明页）。
 
 ### 为什么面板不是「打开一个 URL」，以及静态资源为什么要中转
 
@@ -1136,11 +1135,11 @@ CLI 中途退出时不自动接手，入口换成一小页带按钮的「命令�
 
 ### 宿主里刻意不存在的四条路由
 
-`/api/shutdown`（原义=退出进程）、`/api/client`（spawn Electron 悬浮卡片壳）、`/api/trae/capture-key`（会弹 UAC）、`/widget`（卡片页）。它们在 core 的路由表里照旧留着给 CLI 用，只是不往宿主注册 —— 否则一次误触会用掉用户的 DSH。Origin 闸在 hosted 下不再拿「端口等于 14570」当同源标识（宿主端口每次动态），改收「http(s) + 环回主机名（端口不限）」与 `dsh-app:`，且**只管写操作**，与 CLI 同口径。
+`/api/shutdown`（原义=退出进程）、`/api/client`（spawn Electron 悬浮卡片壳）、`/api/trae/capture-key`（会弹 UAC）、`/widget`（卡片页）。它们在 core 的路由表里照旧留着给 CLI 用，只是不往宿主注册 —— 否则一次误触会用掉用户的 DSH。顶栏那颗「悬浮卡片」按钮跟着一起藏：入口 src 是 `/api/agent-acta/entry?dsh=1`（iframe 的文档 URL 就是它，两支都不用把查询串转给上游），`page/topbar.js` 的 setup 读 `location.search` 得 `isDsh`，按钮挂 `v-if="!isDsh"` —— 否则点了只剩一句「唤出失败」。Origin 闸在 hosted 下不再拿「端口等于 14570」当同源标识（宿主端口每次动态），改收「http(s) + 环回主机名（端口不限）」与 `dsh-app:`，且**只管写操作**，与 CLI 同口径。
 
 ### 边界与回归
 
-不跟宿主明暗切换（面板是自家深色皮，且实测注入 `--dsw-alias-*` 也零变化）；不唤起悬浮卡片；无网络出口。验收：`test/plugin-delivery-test.mjs`（静态：改写覆盖 / 产物可达 / 白名单挡穿越）+ `test/plugin-hosted-test.mjs`（隔离端口 14631 + `mkdtemp` 数据目录里驱动 `apply()`：108 条注册、`exact /` 不在表里、入口 200 非 302、资产与图标真取到、Origin 闸、不写 pid、卸载撤干净），两者都在 selftest 的 `cli` 组；老 CLI 那一面由 `test/cli-behavior-guard.mjs` 七类不变式守着。宿主侧逐条取证与推翻记录在 `DSH-PLUGIN-PLAN.md` §8。
+不跟宿主明暗切换（面板是自家深色皮，且实测注入 `--dsw-alias-*` 也零变化）；不唤起悬浮卡片（连顶栏那颗按钮都不渲染）；无网络出口。验收：`test/plugin-delivery-test.mjs`（静态：改写覆盖 / 产物可达 / 白名单挡穿越）+ `test/plugin-hosted-test.mjs`（隔离端口 14631 + `mkdtemp` 数据目录里驱动 `apply()`：108 条注册、`exact /` 不在表里、入口 200 非 302、资产与图标真取到、Origin 闸、不写 pid、卸载撤干净）+ `test/plugin-takeover-test.mjs`（隔离端口 14637：假上游在跑时走代理、关掉之后下一条请求要静默接手并递出真面板），三者都在 selftest 的 `cli` 组；老 CLI 那一面由 `test/cli-behavior-guard.mjs` 七类不变式守着。宿主侧逐条取证与推翻记录在 `DSH-PLUGIN-PLAN.md` §8。
 
 ## 解析器自检（侧栏「解析器自检」/ `GET /api/selftest`，R32）
 

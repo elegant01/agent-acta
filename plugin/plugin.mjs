@@ -21,7 +21,9 @@ export const name = '@yxzpro/agent-acta';
 export const inject = ['webServer'];
 
 // 宿主里不该存在的五条：抢认证兜底的 `/`、退进程、起 Electron 壳、弹 UAC 抓密钥、悬浮球壳。
-// 它们在 core 的路由表里照旧存在（CLI 要用），只是不给宿主注册。
+// 它们在 core 的路由表里照旧存在（CLI 要用），只是不给宿主注册。顶栏「悬浮卡片」那颗按钮打的是
+// /api/client：hosted 那支压根没这条，代理那支虽能打通，但把桌面悬浮壳开在宿主外头也不是插件该做的事
+// ⇒ 页面按入口 src 上的 ?dsh=1 把它藏掉（两支一致，见 client.js 与 page/topbar.js）。
 // 导出是给守卫对的：test/cli-behavior-guard.mjs 断言「插件实际注册的集合 ≡ ROUTES − DENY + EXTRA」。
 // 不导出的话，「插件悄悄少挂一条 API」这条红线只守住了 core 那半边。
 //
@@ -32,15 +34,14 @@ export const inject = ['webServer'];
 export const HOSTED_DENY = ['/', '/api/shutdown', '/api/client', '/api/trae/capture-key', '/widget'];
 // 面板的唯一入口路径：两支（本机 hosted 递 HTML / 代理上游递 HTML）都挂在这一条上，
 // client.js 的 iframe src 就是它 —— 两支换路不换路径，才不会出现「图标点了但 404」。
+// src 上带的 ?dsh=1 是给页面读的载体标记（页面据此藏掉「悬浮卡片」那颗按钮，见 client.js 与 page/topbar.js）：
+// iframe 的文档 URL 就是这个 src，所以递 HTML 那两支都不必把查询串转给上游。
 export const ENTRY_PATH = '/api/agent-acta/entry';
 // 静态资产的中转路径：`?p=page/x.js`。宿主前端在 `dsh-app://app` 下**只把 /api/* 代理到 webServer**，
 // 所以面板里那些 `/page/…`、`/vendor/…` 引用在浏览器侧一律 404（curl 打宿主 http 口却是 200，别被骗）。
 // 只能把它们收进 /api 命名空间，见下面的 rewriteRefs。
 export const ASSET_PATH = '/api/agent-acta/asset';
-// 「让插件接手」那条：代理模式下 CLI 服务中途停了，面板顶部会给出一个按钮，点它才起 hosted。
-// 为什么要人点一下才起：自动起就可能和「用户又把 CLI 起回来」撞成两个写者，那个决定该由人负责。
-export const TAKEOVER_PATH = '/api/agent-acta/takeover';
-export const HOSTED_EXTRA = [ENTRY_PATH, ASSET_PATH, TAKEOVER_PATH];
+export const HOSTED_EXTRA = [ENTRY_PATH, ASSET_PATH];
 
 // 双载体探测在测试里要能换掉（守卫不能依赖「用户有没有开着 14570」这种环境状态）。
 let cliProbe = probeCliService;
@@ -206,26 +207,12 @@ export function proxy(req, res, upstreamPath) {
     up.on('error', () => {
       res.statusCode = 502;
       res.setHeader('content-type', 'text/plain; charset=utf-8');
-      res.end('agent-acta: 连不上 127.0.0.1:' + cliPort + '（命令行服务刚好退了？重新打开面板可让插件接手）');
+      res.end('agent-acta: 连不上 127.0.0.1:' + cliPort + '（命令行服务刚好退了？下一条请求插件会自己接手）');
       finish();
     });
     if (req.method === 'GET' || req.method === 'HEAD') up.end(); else req.pipe(up);   // POST 的 body 要转出去，写操作才有效
   });
 }
-
-const PAGE_STYLE = 'body{font:14px/1.7 ui-monospace,Consolas,monospace;background:#12161d;color:#dfe6ef;padding:22px;max-width:46rem}code{background:#ffffff14;padding:2px 6px;border-radius:4px}button{font:inherit;background:#2d6cdf;color:#fff;border:0;border-radius:6px;padding:8px 16px;cursor:pointer}';
-
-// 代理模式下 CLI 中途退了才见得到这一页：给一个明确的按钮，点了才起 hosted（不自动起 —— 自动起可能和
-// 「用户又把 CLI 起回来」撞成两个写者，那个决定该由人负责）。
-const TAKEOVER_PAGE = () => `<!doctype html><html lang="zh-CN"><meta charset="utf-8"><title>AgentActa</title>
-<style>${PAGE_STYLE}</style>
-<body><h3>命令行那版服务已退出</h3>
-<p>插件刚才是把 <code>127.0.0.1:${cliPort}</code> 的面板原样递进来的；那个服务不在了，所以这里没有数据可读。</p>
-<p>要插件自己接手（在本进程里起一套扫描与索引，仍不占端口、不写 pid）：
-<button id="go">让插件接手</button>
-<script>document.getElementById('go').onclick=function(){var b=this;b.disabled=1;b.textContent='启动中…';
-fetch('${TAKEOVER_PATH}',{method:'POST'}).then(function(r){return r.json()}).then(function(){location.reload()},function(){location.reload()})};</script>
-</body></html>`;
 
 const plain = (res, code, msg) => { res.statusCode = code; res.setHeader('content-type', 'text/plain; charset=utf-8'); res.end('agent-acta: ' + msg); };
 
@@ -251,38 +238,50 @@ export function apply(ctx) {
     web = webCtx;
     // local = hosted 是否已在本进程起来。装载时探一次：CLI 在跑就先走代理，一个扫描器都不多起。
     let local = false;
-    if (!(await cliServiceUp(true))) { await start({ mode: 'hosted', listen: false }); local = true; }
+    // 上游中途退了就直接接手 —— 装载那一刻做的本来是同一件事（探不到 CLI 就起 hosted），这里只是把
+    // 它推迟到第一次真的需要数据的请求，不再拦一道「先点按钮」。start() 不 listen、不写 pid，
+    // 代价是多一个本进程扫描器；和「用户又把 CLI 起回来」撞成两个写者这条，与装载时那支同风险。
+    // 并发的请求（SSE 重连 + 快照轮询 + 资产）会一起撞进来，所以用在途 promise 收口成一次 start()。
+    let taking = null;
+    const startHosted = () => {
+      if (!taking) {
+        taking = start({ mode: 'hosted', listen: false })
+          .then(() => {
+            local = true;
+            webCtx.logger?.info?.('[agent-acta] hosted 就绪（本进程扫描）v' + VERSION + ' (' + BUILD + ')');
+          })
+          .catch((e) => { taking = null; throw e; });
+      }
+      return taking;
+    };
+    if (!(await cliServiceUp(true))) await startHosted();
+
+    // 每支请求都现判：本机 hosted 已起 → 直接用；CLI 在跑 → 代理过去；两边都没有 → 接手后再用。
+    const sourceOf = async () => {
+      if (local) return 'local';
+      if (await cliServiceUp()) return 'proxy';
+      await startHosted();
+      return 'local';
+    };
 
     const api = async (req, res) => {
-      if (local) return handle(req, res);
-      if (await cliServiceUp()) return proxy(req, res);
-      return plain(res, 503, '命令行服务已退出、插件也还没接手 —— 重新打开面板，点「让插件接手」');
+      let src; try { src = await sourceOf(); } catch { return plain(res, 503, '插件起 hosted 失败，看宿主日志'); }
+      return src === 'local' ? handle(req, res) : proxy(req, res);
     };
     const entry = async (req, res) => {
-      if (local) return deliver(req, res, '/');
-      if (await cliServiceUp()) return proxy(req, res, '/');
-      res.statusCode = 200; res.setHeader('content-type', 'text/html; charset=utf-8'); res.end(TAKEOVER_PAGE());
+      let src; try { src = await sourceOf(); } catch { return plain(res, 503, '插件起 hosted 失败，看宿主日志'); }
+      return src === 'local' ? deliver(req, res, '/') : proxy(req, res, '/');
     };
     const asset = async (req, res) => {
       const target = assetTarget(req);
       if (!target) return plain(res, 400, '资产请求的 p 参数不在白名单（要形如 page/x.js）');
-      if (local) return deliver(req, res, target);
-      if (await cliServiceUp()) return proxy(req, res, target);
-      return plain(res, 503, '命令行服务已退出，插件也还没接手');
-    };
-    const takeover = async (req, res) => {
-      res.setHeader('content-type', 'application/json; charset=utf-8');
-      if (local) { res.end('{"ok":true,"already":true}'); return; }
-      if (await cliServiceUp(true)) { res.statusCode = 409; res.end('{"ok":false,"error":"命令行服务又在跑了，插件继续代理即可"}'); return; }
-      await start({ mode: 'hosted', listen: false });
-      local = true;
-      webCtx.logger?.info?.('[agent-acta] 接手：hosted 就绪 v' + VERSION + ' (' + BUILD + ')');
-      res.end('{"ok":true,"started":true}');
+      let src; try { src = await sourceOf(); } catch { return plain(res, 503, '插件起 hosted 失败，看宿主日志'); }
+      return src === 'local' ? deliver(req, res, target) : proxy(req, res, target);
     };
 
     // EXTRA 那几条有自己的 handler，不能让 passthrough 先占位：core 没这些路由，passthrough 会答 404；
     // 而重复的 (kind,path) 在宿主里是 throw + **先注册的那条赢** ⇒ 真 handler 永远挂不上（302 那次就是这么坏的）。
-    const extraHandlers = { [ENTRY_PATH]: entry, [ASSET_PATH]: asset, [TAKEOVER_PATH]: takeover };
+    const extraHandlers = { [ENTRY_PATH]: entry, [ASSET_PATH]: asset };
 
     for (const s of hostedRouteSpecs()) {
       if (extraHandlers[s.path]) continue;

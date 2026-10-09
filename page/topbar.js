@@ -16,8 +16,9 @@ AACTA.Topbar = {
     <div class="brand"><span class="logo">A</span>AgentActa</div>
     <div class="top-right">
       <!-- 唤出桌面悬浮卡片：卡片被 ✕ 关掉后壳可能还活着（被面板窗吊着），命令行之外给页面一个入口。
-           服务端 POST /api/client → runClient()（幂等）：壳在就聚焦/重建卡片，不在就拉起新壳。 -->
-      <el-button size="small" plain :loading="clientLaunching" title="打开桌面悬浮卡片（右上角常驻的小窗/水球）" @click="$emit('launch-client')">悬浮卡片</el-button>
+           服务端 POST /api/client → runClient()（幂等）：壳在就聚焦/重建卡片，不在就拉起新壳。
+           DSH 里不挂这条路由（HOSTED_DENY），入口 src 带 ?dsh=1，这颗按钮点了只会报错 —— 直接不渲染。 -->
+      <el-button v-if="!isDsh" size="small" plain :loading="clientLaunching" title="打开桌面悬浮卡片（右上角常驻的小窗/水球）" @click="$emit('launch-client')">悬浮卡片</el-button>
       <el-dropdown trigger="click" placement="bottom-end" @command="v => $emit('set-idle', v)">
         <span class="live-tag idle" :class="{idleOn: idleExitMs > 0}" :title="'页面全关且没有新日志持续这么久后，服务自己退出（下次开会话会被 hook 自动拉起）。当前：' + idleText">
           <span class="dot"></span>{{ idleText }}<el-icon class="caret"><arrow-down></arrow-down></el-icon>
@@ -56,6 +57,9 @@ AACTA.Topbar = {
   },
   emits: ['launch-client', 'set-idle', 'set-scan'],
   setup() {
-    return {};
+    // 载体标记（不是状态，所以不进根的 setup）：DSH 插件的 iframe src 是 /api/agent-acta/entry?dsh=1，
+    // 宿主里 /api/client 没注册，那颗按钮只剩报错；浏览器标签页与悬浮卡片「面板 ↗」都不带这个参数，照旧渲染。
+    const isDsh = new URLSearchParams(location.search).has('dsh');
+    return { isDsh };
   }
 };
