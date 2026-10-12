@@ -1106,7 +1106,7 @@ dsh plugin --profile desktop list                                             # 
 `dsh plugin` 的参数逐字转发给 pnpm（认 registry / git / tarball / path 四态），**开发期不用发版**：`link:<绝对目录>` 也能装（只拒相对路径）。三条纪律：
 
 - **改代码必须彻底退出 DSH 再启动**，只关窗口无效（宿主有模块缓存）。
-- URL 里的 `#` 在 Git Bash / PowerShell 要整条加引号；`github:` 缩写认的是 GitHub，本仓库在 AtomGit 得写全 `git+https`。
+- URL 里的 `#` 在 Git Bash / PowerShell 要整条加引号。仓库在 GitHub，钉版本写全 `git+https://github.com/elegant01/agent-acta.git#vX.Y.Z`（用户名 `elegant01` 只有一个 `0`，别多打一个）。
 - 图标不出现有两类原因，别再怀疑「路由没挂上」：① 宿主按 semver 判兼容性，不匹配**只进 `skippedBundles`、不报错**；② `dsh.client.inject` 必须列出声明目标 slot 的宿主包（`@deepseek-ai/dsh-client-ui-sidebar` / `-layout`，已在本包写好），少了它服务端路由、client 模块、两条 `slots.register` 全都「成功」而图标就是不出现。
 
 本项目以 **MIT** 许可发布（`LICENSE`）。npm 上的名字是 **`@yxzpro/agent-acta`** —— 裸名 `agent-acta` 发不出去：npm 的相似性规则判它与已存在的 `agentacta`（Miraj Chokshi 的同类项目，2026-02 首发，MIT）太像，`PUT` 时直接 403 并建议改用作用域名。⚠ **这只改 npm 标识与 DSH 的 bundle 名**：CLI 命令仍是 `agentacta`，仓库名、面板标题、`/api/agent-acta/*` 那些 URL 都没动。发到 npm 之后装法可以直接写包名 —— `dsh plugin --profile desktop add "@yxzpro/agent-acta"`，这也是社区目录 `awesome-dsh-plugin.com/plugins.json` 里主流形态（4392 条中 2264 条走 npm 包名、1903 条走 `github:` 简写、`git+https` 全形式 0 条先例，详见 `DSH-PLUGIN-PLAN.md` §8.9）。代码里没有任何网络出口，也不上传日志内容：它只读你自己机器上那些 agent 已经落盘的文件。
