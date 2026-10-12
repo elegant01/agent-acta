@@ -108,10 +108,10 @@ AACTA.DialogStats = {
                 <tr v-for="b in statsTableRows" :key="b.day" :class="{zero: !b.count}">
                   <td>{{ b.day }}</td>
                   <td>{{ b.count || '—' }}</td>
-                  <td>{{ b.count ? fmtN(b.tin) : '—' }}</td>
-                  <td>{{ b.count ? fmtN(b.tout) : '—' }}</td>
-                  <td>{{ b.count ? fmtN(b.tcache) : '—' }}</td>
-                  <td>{{ b.count ? fmtN(b.total) : '—' }}</td>
+                  <td>{{ b.count && hasTok(b) ? fmtN(b.tin) : '—' }}</td>
+                  <td>{{ b.count && hasTok(b) ? fmtN(b.tout) : '—' }}</td>
+                  <td>{{ b.count && hasTok(b) ? fmtN(b.tcache) : '—' }}</td>
+                  <td>{{ b.count && hasTok(b) ? fmtN(b.total) : '—' }}</td>
                   <td>
                     <span v-if="!b.count">—</span>
                     <span v-else-if="isHeavyDay(b)" :title="'当天最长单轮 ' + fmtDurBig(b.maxDur) + '，占全天 ' + Math.round(b.maxDur / b.dur * 100) + '%——多半是挂机/隔夜的那一轮'">
@@ -421,8 +421,10 @@ AACTA.DialogStats = {
       return {
         ...d, short: d.day.slice(5).replace('-', '/'),
         hIn: p(d.tin), hOut: p(d.tout), hCache: stats.withCache ? p(d.tcache) : 0,
-        tip: d.day + '　合计 ' + fmtN(total) + '（输入 ' + fmtN(d.tin) + ' / 输出 ' + fmtN(d.tout) + ' / 缓存 ' + fmtN(d.tcache)
-          + '）　' + d.count + ' 条 · ' + fmtDurBig(d.dur),
+        // 这一家的源不记 token（crush / doubao / cursor / comate）⇒ 整句不提 token，
+        // 而不是写「合计 0」——0 会被读成「这一天没花钱」
+        tip: d.day + '　' + (hasTok(d) ? '合计 ' + fmtN(total) + '（输入 ' + fmtN(d.tin) + ' / 输出 ' + fmtN(d.tout)
+          + ' / 缓存 ' + fmtN(d.tcache) + '）　' : '不记 token　' + d.count + ' 条　') + d.count + ' 条 · ' + fmtDurBig(d.dur),
       };
     }));
     // x 轴标签抽稀：太密全写会糊成一团（柱本身仍是一天一根，不合并）
@@ -434,8 +436,9 @@ AACTA.DialogStats = {
         || [...v.days].reverse().find(x => x.count);
       if (!d) return '可视范围内没有条目';
       const total = d.tin + d.tout + d.tcache;
-      return (d.day === hoverDay.value ? '' : '最近：') + d.day.slice(5).replace('-', '/') + '　合计 ' + fmtN(total)
-        + '（输入 ' + fmtN(d.tin) + ' / 输出 ' + fmtN(d.tout) + ' / 缓存 ' + fmtN(d.tcache) + '）　' + d.count + ' 条 · ' + fmtDurBig(d.dur);
+      return (d.day === hoverDay.value ? '' : '最近：') + d.day.slice(5).replace('-', '/') + '　'
+        + (hasTok(d) ? '合计 ' + fmtN(total) + '（输入 ' + fmtN(d.tin) + ' / 输出 ' + fmtN(d.tout) + ' / 缓存 ' + fmtN(d.tcache) + '）　'
+          : '这一家的源不记 token　') + d.count + ' 条 · ' + fmtDurBig(d.dur);
     });
     // 卡片 / 概况 / 明细表的数字全部按**可视窗**现算：天桶里字段是全的，切片求和即可，不用回服务端。
     // 选的区间就是统计口径 —— 卡片、图表、明细表、按模型，四块永远在说同一段时间。
@@ -688,7 +691,7 @@ AACTA.DialogStats = {
       statsDisabledDate, statsShortcuts, ana, loadAnalyze, cachePctColor, onAgentChange, gotoEntry, reload,
       tfData, tfSum, tfRowsView, tfEmptyText, tfCovView,
       work, loadWork, workData, curDim, workRows,
-      fmtN, fmtDur, fmtDurBig, fmtTime, fmtPct,
+      fmtN, fmtDur, fmtDurBig, fmtTime, fmtPct, hasTok,
     };
   }
 };

@@ -11,6 +11,8 @@ import { hasMavisSession } from './minimax.mjs';
 import { OPENCLAW_STATE_DIRNAMES, openclawTranscripts } from './openclaw.mjs';
 import { clineTranscripts } from './cline.mjs';
 import { piTranscripts } from './pi.mjs';
+import { qwenProjectsRoot } from './qwen.mjs';
+import { crushRoot, crushDataDir } from './crush.mjs';
 import { CODEARTS_DOER_ONLY_TABLES, codeartsDoerDbFile } from './codeartsdb.mjs';
 import { buddyExtRoot, buddyExtWhyMissing } from './buddyext.mjs';
 // hasCursorTranscripts 里枚举转录走的是 cursor 解析器那一个函数（两种落法共用一套判定，见该函数注释）。
@@ -215,6 +217,25 @@ function candidateBases(name, c) {
     const sd = abs(env.CLINE_SESSION_DATA_DIR);
     if (sd) out.push(sd);
   }
+  // qwen（Qwen Code）：全局目录可被 QWEN_HOME 整体改写，会话那一层（projects/tmp）还能被
+  // QWEN_RUNTIME_DIR 单独挪走（两个变量在源码 Storage.getRuntimeBaseDir / getGlobalQwenDir 里各管一层）。
+  // 默认摆法的 ~/.qwen 由 basesFor 铺好；这里只补「指哪儿认哪儿」，qwenProjectsRoot 自己上下探。
+  if (name === 'qwen') {
+    for (const k of ['QWEN_HOME', 'QWEN_RUNTIME_DIR']) {
+      const v = env[k] && String(env[k]).trim();
+      if (!v) continue;
+      out.push(v.startsWith('~') ? path.join(home, v.replace(/^~[\\/]?/, '')) : v);
+    }
+  }
+  // crush（Charm 的终端 agent）：数据目录 = %LOCALAPPDATA%\crush（Windows 实测）/ ~/.local/share/crush，
+  // 整体可被 CRUSH_GLOBAL_DATA 改写。**库不在数据目录里** —— 每个项目一份 <cwd>/.crush/crush.db，
+  // 数据目录里那份 projects.json 才是索引（见 parsers/crush.mjs）。darwin 分支的 basesFor 铺不到
+  // .local/share，所以这里显式补 crushDataDir() 的结果。
+  // crush 的**数据目录要排在最前面**（unshift，不是 push）：basesFor 的 `~/.crush` 那条在 Windows 上
+  // 常常是「把家目录当项目用」时 crush 自己建的 `.crush` —— 那是一份**空的/局部的**库，先命中它就把
+  // 整个 agent 钉在 0 条上（本机实测：侧栏 crush 已接入却 0 条，而 %LOCALAPPDATA%\crush 的索引里躺着三个
+  // 项目、其中一个正在写）。数据目录里有 projects.json，是所有项目的**超集**，所以它必须优先。
+  if (name === 'crush') { const dd = crushDataDir({ platform, home, env }); if (dd) out.unshift(dd); }
   // mimocode（记忆/检查点类 agent）：真源是 <home>/.local/share/mimocode/mimocode.db。
   // Windows 实测就是 C:\Users\<u>\.local\share\mimocode\mimocode.db（mac/Linux 同源，XDG 式摆法，
   // 没有 Electron 的 %APPDATA% 分支）。memory/ 是库导出的展示层，在 db 下一层。
@@ -1175,6 +1196,18 @@ export function sniffBase(base) {
   // ⚠️ sessions 存的是**会话根本身**（那一层可被 PI_CODING_AGENT_SESSION_DIR / settings.sessionDir
   //    改名挪走，不能再靠 join('sessions') 拼），所以主文件把 pi 记进了 ROOT_SESSIONS_AGENTS。
   { const pp = piTranscripts(base); if (pp) return { kind: 'pi', sessions: pp.root, traces: null }; }
+  // qwen（Qwen Code，阿里通义千问的 CLI，gemini-cli 的 fork）：真源是 <home>/.qwen/projects/<项目>/chats/<会话 id>.jsonl。
+  // 必须抢在下面那一大片目录形状判据之前：~/.qwen 同时有 projects/ 与 tmp/，落到 hasClaudeJsonl /
+  // hasGeminiSessions 手上会被认成 claude 或 gemini —— 两家的行形状与 qwen 不同（qwen 每条行自带
+  // provenance 与 usageMetadata），于是 0 条且静默（与 dsh / kimi / openclaw / cline / pi 当初同源）。
+  // 判据是**内容**（首行须同时带 sessionId 与 provenance），名字猜错不会误接邻居的数据。
+  // ⚠️ sessions 存的是 **projects 根**（可被 QWEN_HOME / QWEN_RUNTIME_DIR 挪走）⇒ 主文件记进 ROOT_SESSIONS_AGENTS。
+  { const qw = qwenProjectsRoot(base); if (qw) return { kind: 'qwen', sessions: qw, traces: null }; }
+  // crush（Charm 的终端 agent）：**每个项目一份** <cwd>/.crush/crush.db，数据目录只有 projects.json 那份索引。
+  // 必须抢在 isDir 兜底之前：手工填 %LOCALAPPDATA%\crush 或某个项目目录时，兜底那条条都接不住 → 0 条静默。
+  // 判据是**库内容**（sqlite 页头 + messages 表带 parts 与 is_summary_message 两列），与 opencode 家族
+  // 只差一个复数 s 的表名不足以区分，所以列集合是硬条件（见 parsers/crush.mjs 的注释）。
+  { const cr = crushRoot(base); if (cr) return { kind: 'crush', sessions: cr, traces: null }; }
   if (!isDir(base)) return null;
   // TraeCode / TraeWork 桌面版：<base>/logs/<timestamp>/window1/renderer.log
   // 必须排在所有 sessions/projects 判据之前 —— Trae CN 应用目录下没有 sessions/、projects/、

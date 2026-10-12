@@ -73,6 +73,9 @@ export const OFF_KINDS = new Set(['jsonl', 'claude', 'buddyjsonl', 'codearts', '
   // pi（Pi Coding Agent）：<会话根(--<cwd 编码>-- 分项目)/<时间>_<uuid>.jsonl 是追加式会话树，
   // 逐行 off 续读语义与 openclaw / claude 完全一致（同源的消息形状，usage 在每条 assistant 行内）。
   'pi',
+  // qwen（Qwen Code）：projects/<项目编码>/chats/<会话 id>.jsonl 逐行追加的消息流，
+  // 逐行 off 续读语义与 claude / pi 一致（usageMetadata 在每条 assistant 行内）。
+  'qwen',
   // generic-jsonl（R18）：声明式接入的 claude 同族逐行 jsonl，逐行 off 续读语义与 claude 完全一致。
   // 它的「**rules** 口径」版本不按 kind 走、按 **agent 走**（同一 kind 下每个 agent 的 rules 可以
   // 各不相同），版本号 rulesRev / 指纹 rulesHash 随 config 一起落盘，由主文件在 loadIndex 恢复时
@@ -234,7 +237,24 @@ export const OFF_KINDS = new Set(['jsonl', 'claude', 'buddyjsonl', 'codearts', '
 //             Σreasoning/Σoutput ≈ 20.8%）。不 bump 的话老条目带着旧 tout 不动、只有重扫才更新，
 //             而这一行现在还要与 Doer 库（kind=codeartsdb，tout=output+reasoning）互换供数 ——
 //             两边口径不齐时，「库读不动退回日志」会看着像 tout 凭空掉了一截。
-export const PARSER_REV = { jsonl: 2, buddyjsonl: 5, claude: 14, kimi: 4, codex: 3, copilot: 1, codearts: 3, tracecode: 4, tracework: 4, doubao: 8, minimax: 2, 'generic-jsonl': 1, openclaw: 1, mimocode: 1, kilo: 1, comate: 2, cline: 1, buddyext: 1, pi: 1, codeartsdb: 1 };
+// qwen:1 —— 首次接入（2026-10-12）。一上来就钉死、以后动必须 +1 的三条：
+//             ① promptTokenCount **含**缓存（实样自证 total = prompt + candidates 恒成立、cached ⊆ prompt），
+//                故 tin = prompt − cached、tcache = cached；thoughtsTokenCount **不另加**（已在 candidates 里）；
+//             ② 开轮只认 **type:"user"**（tool_result 行的 message.role 也是 "user"，看 role 会把一次工具
+//                调用切成一轮）；
+//             ③ 后台子 agent（managed-auto-memory-extractor 等）的遥测调用**不计入**：判据是
+//                uiEvent.subagentId 非空 **或** prompt_id 不含 '########'（主链形如 <会话 id>########0）。
+//             逐次 dur/ttft 只能从 api_response 遥测行按「紧邻的前一条、token 对得上」配对，
+//             assistant 行本身没有耗时字段 —— 这三条任何一条改动都会重排落盘 turns 的桶。
+// crush:1 —— 首次接入（2026-10-12，SQLite 型 kind，编号管的是搜索分片作废）。口径上最要紧的一条：
+//             **逐轮 token 源头不可得** —— 库里没有 per-message 用量列，sessions.prompt_tokens /
+//             completion_tokens 实测是「**最后一次调用**」的快照（同一会话连问三轮：completion **187→3→13**，
+//             会倒退的数不可能累计；prompt 11790→11985→11995 是上下文在长），只有 cost 才是会话累计，
+//             而**缓存 token 一个都不存**（无列、parts 里也没 usage 块）。⇒ tin/tout/tcache 如实 0（doubao 那一档），
+//             不拿会话快照冒充某一轮、也不按轮摊累计 cost。另两条：时间列是 **unix 秒**（入库 ×1000，
+//             工具耗时在 metadata 的 start_time/end_time 里才是毫秒）；同一秒的 user/assistant
+//             **必须按 rowid 稳定序**（拿 uuid 当次级键会把回复排到提问前面 → 那一轮 0 次调用）。
+export const PARSER_REV = { jsonl: 2, buddyjsonl: 5, claude: 14, kimi: 4, codex: 3, copilot: 1, codearts: 3, tracecode: 4, tracework: 4, doubao: 8, minimax: 2, 'generic-jsonl': 1, openclaw: 1, mimocode: 1, kilo: 1, comate: 2, cline: 1, buddyext: 1, pi: 1, codeartsdb: 1, qwen: 1, crush: 1 };
 
 // index 落盘由主文件负责（IO 与调度都在那边）；解析器只报「哪个 kind 脏了」。
 // 主文件启动时调 setSaveHook 把落盘登记函数注入进来 —— 避免反向 import 主文件。

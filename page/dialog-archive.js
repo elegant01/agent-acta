@@ -96,7 +96,7 @@ AACTA.DialogArchive = {
             <span class="arc-pv">{{ r.preview || '(无文本预览)' }}</span>
             <span class="arc-tag">{{ agentLetter(r.agent) }}</span>
             <span v-if="!r.hasDetail" class="arc-nod">无详情</span>
-            <span class="arc-kv">↑{{ fmtN(r.tin) }} ↓{{ fmtN(r.tout) }}</span>
+            <span v-if="hasTok(r)" class="arc-kv">↑{{ fmtN(r.tin) }} ↓{{ fmtN(r.tout) }}</span>
             <span v-if="r.tools" class="arc-kv">{{ r.tools }} 工具</span>
             <span v-if="r.calls" class="arc-kv">{{ r.calls }} 次 LLM</span>
             <span v-if="r.dur" class="arc-kv">{{ fmtDur(r.dur) }}</span>
@@ -337,6 +337,6 @@ AACTA.DialogArchive = {
     // 模板只认 props ∪ setup return（page-check.mjs 盯住）—— 下面这串全是模板里出现过的名字
     return { arc, selAgent, selDay, q, openId, detail, load, pick, reload, more, toggle,
       isOpen, toggleAgent, cfgOpen, isSkipped, toggleSkip, skipSaving, dayRows, scopeText, thenNote, arcBytes,
-      fmtN, fmtDur, fmtTime, agentLetter, agentColor, agentIcon, toolText, copyRaw, prettyJson };
+      fmtN, fmtDur, fmtTime, hasTok, agentLetter, agentColor, agentIcon, toolText, copyRaw, prettyJson };
   }
 };

@@ -253,7 +253,7 @@ agentacta --install-hooks        # 一条命令写完（先 --dry 可预览）
 atomcode 要开 datalog 才有逐次明细、kimi 三份日志根、trae 的 SQLCipher 库等）完整说明见 **LOGFORMATS.md**。
 
 - **内置**（开箱即读，不需要配置）：`atomcode`（`~/.atomcode/sessions`）、`codebuddy`（**两个根**：CLI 的 `~/.codebuddy/projects` + genie 扩展的 `%LOCALAPPDATA%\CodeBuddyExtension\Data`，后者挂在 `sessionsExtra` 上、每轮重算）、`workbuddy`（`~/.workbuddy/projects`）
-- **自动发现**：服务启动与每轮扫描时对 `claude / codex / cursor / trae / qoder / opencode / gemini / copilot / windsurf / codearts / kimi / dsh / zcode / doubao / hermes / devin / minimax / mimocode / kilo / openclaw / cline / pi`
+- **自动发现**：服务启动与每轮扫描时对 `claude / codex / cursor / trae / qoder / opencode / gemini / copilot / windsurf / codearts / kimi / dsh / zcode / doubao / hermes / devin / minimax / mimocode / kilo / openclaw / comate / cline / pi / qwen / crush`
   在 `~/.<name>`、`%APPDATA%\<name>`、Application Support/<name>、`~/.config/<name>` 等位置自动嗅探，命中即注册（`source:auto`），目录消失自动摘除。mimocode 的会话不在 `~/.<name>` 那套约定里，而在 `~/.local/share/mimocode/memory`（`candidateBases('mimocode')` 单独补这条真路径命中），见下面「mimocode」一节。
   注意 **zcode 是例外形态**：它的会话不在目录里，而在 SQLite 库 `~/.zcode/cli/db/db.sqlite`（只读）——所以「ZCode 聊了几轮、这里却扫不到」在 1.8.4 起不再发生
   **opencode 也是例外形态**：会话全在 `~/.local/share/opencode/opencode.db`（**明文** SQLite + WAL，**不需要密钥**），
@@ -807,7 +807,7 @@ qoder 与别家混比时，「积分」行的别家一侧、Token 行的 qoder �
   ① 能切：`extractable:true` + `lines[]`，`note` 里写清「本文件第 N–M 行（1-based，与磁盘一致，空行已跳过）」；
   ② 源不是单文件 JSONL（数据库 / 多帧压缩 / 内存转录 / 多文件）：只给 `file` 路径 + 一句说明；
   ③ 源文件未载入内存（还没扫到或已淘汰）、或按开轮判定定位不到那一轮（源被轮转/截断）：同样退回说明文字。
-  ②③ 不是 bug，是设计边界 —— 能切的这十家：`claude / codex / buddyjsonl / doubao / minimax / kimi / copilot / generic-jsonl / openclaw / pi`。
+  ②③ 不是 bug，是设计边界 —— 能切的这十一家：`claude / codex / buddyjsonl / doubao / minimax / kimi / copilot / generic-jsonl / openclaw / pi / qwen`。
 - 坏 id 或条目已淘汰 → **404** `{ ok:false, error:'找不到该条目…' }`。
 
 **「原始片段」的归轮口径**：从这一轮的**用户输入行**起，到**下一轮开始前**止，含该轮内的模型响应、工具调用与

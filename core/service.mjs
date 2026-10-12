@@ -68,6 +68,10 @@ import { scanDevinDb, devinDbErr, devinDbEntryContent } from '../parsers/devindb
 import { scanMavis, mavisEntryContent } from '../parsers/minimax.mjs';
 import { scanOpenclaw, openclawEntryContent, openclawUserText } from '../parsers/openclaw.mjs';
 import { scanPi, piEntryContent, piUserText } from '../parsers/pi.mjs';
+// qwen（Qwen Code，阿里通义千问的 CLI、gemini-cli 的 fork）：~/.qwen/projects/<项目>/chats/<会话 id>.jsonl
+import { scanQwen, qwenEntryContent, qwenUserText } from '../parsers/qwen.mjs';
+// crush（Charm 的终端 agent）：**每个项目一份** <cwd>/.crush/crush.db，数据目录里的 projects.json 是索引
+import { scanCrush, crushEntryContent } from '../parsers/crush.mjs';
 import { scanCline, clineScanErr, clineEntryContent } from '../parsers/cline.mjs';
 // buddyext（CodeBuddy 扩展版：VSCode / CodeBuddyIDE / JetBrains 共用的 genie 扩展，
 // %LOCALAPPDATA%\CodeBuddyExtension\Data）—— 与 parsers/buddy.mjs 那个 CodeBuddy **CLI**（~/.codebuddy）
@@ -284,7 +288,7 @@ const DEFAULT_AGENTS = {
 // traework 与 trae 都在名单里：装在同一台机器上的两个产品（Trae CN / Trae Work / Trae SOLO）
 // 各自走 NAME_ALIASES 中的不同别名，被 sniffBase 区分成 tracecode 与 tracework 两个 kind。
 // kilo 与 opencode 也是各自独立的一行：装了 KiloCode 的机器上两家库会同时在（名字不同、kind 不同）。
-const KNOWN_AGENTS = ['claude', 'codex', 'cursor', 'trae', 'traework', 'qoder', 'opencode', 'gemini', 'copilot', 'windsurf', 'codearts', 'kimi', 'dsh', 'zcode', 'doubao', 'hermes', 'devin', 'minimax', 'mimocode', 'kilo', 'openclaw', 'comate', 'cline', 'pi'];
+const KNOWN_AGENTS = ['claude', 'codex', 'cursor', 'trae', 'traework', 'qoder', 'opencode', 'gemini', 'copilot', 'windsurf', 'codearts', 'kimi', 'dsh', 'zcode', 'doubao', 'hermes', 'devin', 'minimax', 'mimocode', 'kilo', 'openclaw', 'comate', 'cline', 'pi', 'qwen', 'crush'];
 
 const agentConfs = new Map(); // name -> {kind, sessions, sessionsExtra?, traces, builtin, enabled, source, missing}
 
@@ -1129,6 +1133,9 @@ function dirTaken(conf, self) {
 function confAvailable(c) {
   // zcode / traedb / opencode / kilo / hermes / devin 的根是**数据库文件**而不是目录（sessions 存的是 db 路径）
   if (c.kind === 'zcode' || c.kind === 'traedb' || c.kind === 'opencode' || c.kind === 'kilo' || c.kind === 'hermes' || c.kind === 'devindb') return !!(c.sessions && isFile(c.sessions));
+  // crush 的 sessions 两种形状都可能：数据目录/项目目录（靠 projects.json 索引展开成 N 份库），
+  // 或用户直接填的那一份 crush.db —— 所以文件和目录都算「有源可扫」（见 parsers/crush.mjs 的 crushRoot）
+  if (c.kind === 'crush') return !!(c.sessions && (isFile(c.sessions) || isDir(c.sessions)));
   return rootsOf(c).some(isDir) || (c.traces && isDir(c.traces));
 }
 
@@ -1144,9 +1151,12 @@ function confAvailable(c) {
 //      ~/.comate-engine/store，取 dirname 爬到 ~/.comate-engine —— 那底下 browser/ log/ machine/ 里
 //      有 *.jsonl，被 claude 的兜底判据 hasClaudeJsonl(base) 接走 → kind 被改写成 claude 并 purgeAgent
 //      → 下一轮 candidateBases 又把它找回来注册成 comate → 无限翻转（条目一会儿有一会儿没）。
+//   qwen     = <base>（Qwen Code 的 **projects 根**：可被 QWEN_HOME / QWEN_RUNTIME_DIR 挪走，取 dirname 会爬到 ~/.qwen）
+//   crush    = <base>（crush 的**数据目录**，库里躺着 projects.json 索引；取 dirname 爬到 %LOCALAPPDATA%
+//              就会被 doubao / 别的 Electron 目录判据接走 —— 与 comate 那条翻转事故同一形状）
 // 重新嗅探时若对它们取 path.dirname 会爬到**上层**，从而认成隔壁 agent（mimocode 的真实事故）
 // 或退化成 atomcode。按 name 判断，不按 kind —— kind 正是可能被改坏的那个字段。
-const ROOT_SESSIONS_AGENTS = new Set(['copilot', 'minimax', 'mimocode', 'openclaw', 'comate', 'pi']);
+const ROOT_SESSIONS_AGENTS = new Set(['copilot', 'minimax', 'mimocode', 'openclaw', 'comate', 'pi', 'qwen', 'crush']);
 
 // 只用**本 agent 自己的**候选路径重新推导配置（candidateBases + sniffBase）。
 // 用途：配置里的 sessions 被别的 agent 抢走 / 被改错时，回到本源把它找回来。
@@ -1554,6 +1564,10 @@ function scanBranch(conf) {
     case 'openclaw': return { kind: 'openclaw', list: conf.sessions };
     // pi（Pi Coding Agent）：list = 会话根（默认 <agentDir>/sessions），下面每个 --<cwd 编码>-- 一个项目
     case 'pi': return { kind: 'pi', list: conf.sessions };
+    // qwen（Qwen Code）：list = projects 根（默认 ~/.qwen/projects），下面每个 <项目编码>/chats/*.jsonl
+    case 'qwen': return { kind: 'qwen', list: conf.sessions };
+    // crush：list = 数据目录 / 项目目录 / 某一份 crush.db，解析器按 projects.json 展开成 N 份库
+    case 'crush': return { kind: 'crush', list: conf.sessions };
     case 'generic-jsonl': return { kind: 'generic-jsonl', list: conf.sessions };
     case 'buddyjsonl': return { kind: 'buddyjsonl', list: conf.sessions };
     case 'codex': return { kind: 'codex', list: conf.sessions };
@@ -1706,6 +1720,14 @@ function scanOneAgent(agent, conf, onlyFile) {
     // usage 里 input **不含** cache（与 openclaw 同侧），另把 kind:"cache_warm" 的用量行与压缩/分支摘要的
     // usage 一起计入所在轮 —— 判据是 pi 自己的账按整棵树全量记（见 parsers/pi.mjs 头 ⚠️ 口径二）。
     else if (b.kind === 'pi') scanPi(agent, b.list, onlyFile);
+    // qwen（Qwen Code）：projects/<项目编码>/chats/<会话 id>.jsonl 逐行追加，逐行 off 增量续读；
+    // usageMetadata 在每条 assistant 行内（⚠️ promptTokenCount **含**缓存 ⇒ tin = prompt − cached），
+    // 窗口容量行内自带 contextWindowSize，逐次 dur/ttft 从同转录的 api_response 遥测行配对（见 parsers/qwen.mjs）
+    else if (b.kind === 'qwen') scanQwen(agent, b.list, onlyFile);
+    // crush（Charm 的终端 agent）：**每个项目一份** .crush/crush.db，按数据目录的 projects.json 展开逐个扫；
+    // 一条 assistant 消息 = 一次调用，parts 里带 text/reasoning/tool_call/finish，工具返回是 role='tool'。
+    // ⚠️ 库里没有逐轮 token（sessions 那两个数是「最后一次请求」的快照），故 tin/tout 如实记 0（见 parsers/crush.mjs）
+    else if (b.kind === 'crush') scanCrush(agent, b.list);
     // traedb：库优先 + 读不出来回退 renderer.log（两边的取舍见 scanTraeAgent）
     else if (b.kind === 'traedb') scanTraeAgent(agent, conf, onlyFile);
     // kimi 可能有多个根（CLI 的 ~/.kimi-code + 桌面版的 runtime/kimi-code/home），逐个扫
@@ -2100,6 +2122,11 @@ function entryContent(id, full) {
     if (src.kind === 'openclaw') return openclawEntryContent(src, full);
     // pi：同 openclaw —— 重读转录按 src.turn 过滤，工具按 toolCallId 回填，calls 带逐次 usage 与 durationMs
     if (src.kind === 'pi') return piEntryContent(src, full);
+    // qwen：同 pi —— 重读转录按 src.turn 过滤，工具按 functionResponse.id 回填，
+    // 逐次 dur/ttft 从转录里的 api_response 遥测行配对（assistant 行本身不落耗时）
+    if (src.kind === 'qwen') return qwenEntryContent(src, full);
+    // crush：同 devindb / traedb —— 整轮已在扫描时并进内存，直接读（源是 SQLite，重读没有意义）
+    if (src.kind === 'crush') return crushEntryContent(src, full);
     // tracecode / tracework：详情从 renderer.log 重解析指定 sessionId 的全部事件
     //（扫描只存了 entry 概要，详情页要逐事件展开；与 codearts/codex 同款「重读文件按 turn 过滤」）
     if (src.kind === 'tracecode' || src.kind === 'tracework') {
@@ -2117,7 +2144,7 @@ function entryContent(id, full) {
 // 解析结果（entryContent）仍是完整、可信的。绝不为了「都有片段」而编造。
 // 返回：{ kind, file, extractable, lines|null, note }。lines 是**原始文本行数组**（trim 后非空、未解析），
 // 下标与磁盘行号对齐（1-based 行号 = 下标+1），复现时直接 cp 这一段即可。
-const REPRO_JSONL_KINDS = new Set(['claude', 'codex', 'buddyjsonl', 'doubao', 'minimax', 'kimi', 'copilot', 'generic-jsonl', 'openclaw', 'pi']);
+const REPRO_JSONL_KINDS = new Set(['claude', 'codex', 'buddyjsonl', 'doubao', 'minimax', 'kimi', 'copilot', 'generic-jsonl', 'openclaw', 'pi', 'qwen']);
 function reproRaw(src, e) {
   const out = { kind: src.kind, file: src.file || null, extractable: false, lines: null, note: '' };
   const fstate = files.get(src.file);
@@ -2206,6 +2233,9 @@ function isTurnStart(kind, j, e) {
     const msg = j.message || {};
     return msg.role === 'user' && !!piUserText(msg.content);
   }
+  // qwen：开轮行 = type:"user" 且正文非空。⚠️ 不能看 message.role —— tool_result 行的 role 同样是 "user"
+  // （Gemini 形状把工具返回当用户消息回给模型），只看 role 会把一次工具调用切成一轮。
+  if (kind === 'qwen') return j.type === 'user' && !!qwenUserText(j.message);
   if (kind === 'kimi') return j.type === 'turn.prompt';
   if (kind === 'copilot') return j.type === 'user.message' && copilotTurnStart(j);
   if (kind === 'generic-jsonl') {
@@ -2939,7 +2969,10 @@ function sessionsAgg(agentFilter, projectFilter, range, from, to, limit, work) {
 //   tracecode/tracework 源里明写「工具返回不落地」（tracecode.mjs:335）、generic 的 rules 没有 result 规则。
 const TOOL_FAIL_TIERS = {
   signal: new Set(['claude', 'jsonl', 'dsh', 'zcode', 'traedb', 'opencode', 'kilo', 'codeartsdb', 'hermes', 'devindb', 'gemini',
-    'kimi', 'buddyjsonl', 'doubao', 'minimax', 'copilot', 'trace', 'atomcode', 'openclaw', 'cline', 'buddyext', 'pi']),
+    'kimi', 'buddyjsonl', 'doubao', 'minimax', 'copilot', 'trace', 'atomcode', 'openclaw', 'cline', 'buddyext', 'pi',
+    // qwen：toolCallResult.status !== 'success' 与遥测行的 success:false 两个信号都在
+    // crush：tool_result 的 data.is_error 是逐项标记（错一条命令不把整轮染红，同 devindb 的取舍）
+    'qwen', 'crush']),
   noDetail: new Set(['cursor', 'codearts']),
   noFlag: new Set(['codex', 'tracecode', 'tracework', 'generic-jsonl']),
 };

@@ -21,6 +21,8 @@
 | mimocode（记忆/检查点类 agent） | `~/.local/share/mimocode/mimocode.db`（Drizzle/SQLite，**真源**）；`memory/` 下那些 `checkpoint.md`/`notes.md`/`MEMORY.md` 是库导出的展示层，仅作库读不动时的只读兜底 | SQLite：`session`(一次会话) / `message`(一条消息，**不是一轮**，`data` 含 `role`/`time.{created,completed}`/`tokens.{input,output,reasoning,cache}`/`cost`/`finish`/`error`；**assistant 的模型在顶层 `modelID`/`providerID`，user 才是 `model.{providerID,modelID}`**) / `part`(`data.type` ∈ text/reasoning/tool/step-start/step-finish；tool 碎片带 `callID`/`tool`/`state.{status,input,output}`/`time.{start,end}`) / `project`(`worktree`) | 轮（**一条 user `message` 开一轮**，其后所有 assistant `message` 并入该轮 —— 与 opencode 同款；首条非 user 也算一轮） | ✅ 轮内最早 `message.data.time.created`（**毫秒，原样透传**，与全项目 13 位毫秒口径一致） | ✅ 逐次累加：`tin=Σtokens.input` / `tout=Σ(tokens.output+reasoning)` / `tcache=Σ(cache.read+cache.write)` / `total` 优先取库自带 `tokens.total`（实测 = input+output+reasoning+cache）；`rounds=calls=`轮内 assistant message 数，`tools=`轮内 tool 碎片数，`state.status==='error'` 的碎片 → 轮 `status='error'`；`dur` = 轮内 (最晚 completed − 最早 created)，**毫秒**（与 claude/opencode 同口径，页面 `fmtDur` 按毫秒读）；`models` 取轮内 assistant 顶层 `modelID`（缺则 user 的 `model.modelID`）；`nollm` = 轮内无 assistant（用户刚发问）；详情 `user` **剥掉 `<system-reminder>` 注入块**（真用户输入常只有注入块的百分之一），`calls[]` 给逐次 LLM 调用明细；`ctx` 恒 0（库里没有窗口字段，页面按查表退化）。库读不动时回退 markdown 层（token/工具恒 0，详情 `note` 说明）。⚠️ **`PARSER_REV.mimocode` 管的是搜索分片**（本 kind 不落 index），改轮口径必须 bump 它 —— 否则老分片按旧 `turn` 下标返回错轮的正文且不会自愈 |
 | openclaw（OpenClaw） | `<stateDir>/agents/<agentId>/sessions/<sessionId>.jsonl`（`stateDir` 默认 `~/.openclaw`，老版本 `.clawdbot`，`OPENCLAW_STATE_DIR` 可整体改写） | 追加式**会话树**逐行 JSON：首行会话头（`{"type":"session","version":3,…}`）→ `message` 行（user/assistant/toolResult）→ `session_info`/`model_change`/`custom`/`compaction` 等标记行 | 轮（`message.role=user` 且正文非空开轮，下一条 user 收轮；空用户消息不开轮） | ⚠️ 轮级 = 下一轮 user 时间差（末轮 0）；转录不落逐次调用耗时，`calls[].dur` 恒 0 | ✅ assistant 行 `message.usage`（**`tin = input` 直接取 —— 源码写死 input 不含 cache**，`tcache = cacheRead+cacheWrite`）；ctx 分母 = 同 agent `agent/models.json` 里该模型的 `contextWindow`（取不到 → 0，退化为只显示占用） |
 | pi（Pi Coding Agent） | `<agentDir>/sessions/--<cwd 编码>--/<创建时间>_<sessionId>.jsonl`，`agentDir` 默认 `~/.pi/agent`（`PI_CODING_AGENT_DIR` 可改写；会话根还能被 `PI_CODING_AGENT_SESSION_DIR` 或 `settings.sessionDir` 改名挪走 ⇒ index 里存的是**会话根本身**） | 追加式**会话树**逐行 JSON：首行会话头 → `message`（user/assistant/toolResult）→ `model_change`/`thinking_level_change`/`session_info`/`usage`/`compaction`/`branch_summary`/`context_edit`/`label` | 轮（`message.role=user` 且正文非空开轮；空用户消息不开轮） | ✅ **逐次调用现成 `message.durationMs`**（openclaw 那一族没有，它的 `calls[].dur` 恒 0）；轮级 = 下一轮 user 时间差（末轮 0） | ✅ assistant 行 `usage`（**`tin = input` 直接取 —— input 不含 cache**，`tcache = cacheRead+cacheWrite+cacheWrite1h`）；⚠️ **整棵树全量累加、不剪废弃分支**，且 `usage`(cache_warm) / `compaction.usage` / `branch_summary.usage` 都计入所在轮 —— 判据是 pi 自己 `/session` 的账，逐文件实样比对一致；ctx 分母 = `models-store.json`（扁平）+ `models.json`（挂在 `providers` 下，**两份形状不一样**） |
+| qwen（Qwen Code，阿里通义千问的 CLI、**gemini-cli 的 fork**） | `<home>/.qwen/projects/<cwd 编码>/chats/<sessionId>.jsonl`（`QWEN_HOME` 改全局目录、`QWEN_RUNTIME_DIR` 单独挪走 projects/tmp 那一层 ⇒ index 里存的是 **projects 根**；同目录 `*.ledger.jsonl` 与 `*.runtime.json` 显式排除） | 每消息一行（claude 同族，但 parts 是 **Gemini 形状** `{text,thought}` / `{functionCall}` / `{functionResponse}`）+ `type:"system"` 的 `ui_telemetry` 行（`api_response` / `tool_call` / `api_error`） | 轮（**`type==="user"`** 且正文非空才开轮 —— ⚠️ `tool_result` 行的 `message.role` 也是 `user`，只看 role 会把一次工具调用切成一轮） | ✅ 轮级 = 下一轮 time 差（末轮 0）；逐次 `dur`/`ttft` 从 `api_response` 遥测行配对（assistant 行不落耗时、两边没有公共 id ⇒ 按「紧邻的前一条、token 对得上」），配不上记 0 并在 callsNote 报数 | ✅ assistant 行 `usageMetadata`（⚠️ **`promptTokenCount` 含缓存**，与 cline/buddyext 同侧、与 openclaw/pi 相反 ⇒ `tin = prompt − cached`、`tcache = cached`；`thoughtsTokenCount` 已在 `candidatesTokenCount` 里，**不另加**）；`ctx` = 行内 `contextWindowSize`；⚠️ **后台子 agent**（`managed-auto-memory-extractor` 等）的调用不计入 —— 判据 `uiEvent.subagentId` 非空 **或** `prompt_id` 不含 `########`（主链形如 `<会话 id>########0`）；`api_error` 标红、`chat_compression` 进 compacts、`custom_title` 进 name |
+| crush（Charm 的终端 agent，Go/bubbletea） | **每个项目一份** `<cwd>/.crush/crush.db`；`%LOCALAPPDATA%\crush`（POSIX `~/.local/share/crush`，`CRUSH_GLOBAL_DATA` 可整体改写）里那份 `projects.json` 才是「这台机器用过哪些目录」的索引 ⇒ index 里存的是**数据目录**（也可以直接填某一份库/某个项目目录） | SQLite（goose 迁移）：`sessions` / `messages`（⚠️ 与 opencode 家族**只差一个复数 s**，判据必须带列 `parts` + `is_summary_message`）；一条消息的 `parts` 是 **一个 JSON 数组**（`text` / `reasoning` / `tool_call` / `tool_result` / `finish`） | 轮（一条 `role='user'` 消息开轮，其后 assistant/tool 并入；一条 assistant 消息 = 一次调用） | ⚠️ 时间列是 **unix 秒**（入库 ×1000；工具耗时另在 `tool_result.metadata` 的 `start_time`/`end_time`，那对才是毫秒）；轮内末次活动 − 轮首 | ⚠️ **逐轮 token 源头不可得** ⇒ `tin/tout/tcache` 如实 0、`calls[].tin` 留 null。库里只有三个**会话级**数：`prompt_tokens`/`completion_tokens` 是「**最后一次调用**」的 in/out 快照（同一会话连问三轮实测 completion **187→3→13**，会倒退就不是累计；prompt 11790→11985→11995 是上下文变长），`cost` 才是会话累计 —— 不拿快照冒充某一轮、也不按轮摊 cost；**缓存 token 一律不存**（无列、`parts` 里也没 usage 块；`prism_*` 是 hyper 抵扣额不是 token），所以 crush 的缓存命中永远是「没记」而不是「命中 0」；`ctx` 恒 0（库里没有窗口容量）。`is_summary_message=1` 算一次压缩不进正文；`finish.reason` 的 `error` 标红、含 abort/cancel 字样的记中断 |
 | copilot（GitHub Copilot CLI） | `~/.copilot/session-state/<sessionId>/events.jsonl`；同根 `session-store.db` + WAL | 每行一个结构化事件：`session.start` / `user.message` / `assistant.message` / `assistant.turn_end`；用量库为 `assistant_usage_events` | 轮（`turnId` 分组） | ✅ 事件时间戳；SQLite 用量表补逐次 duration/TTFT | ✅ `assistant_usage_events` 的 input/output/cache/reasoning；库不可读时正文仍可显示 |
 | cline（Cline CLI 3.x） | `<data>/sessions/<会话 id>/<会话 id>.messages.json`（data 根默认 `~/.cline/data`；`CLINE_DATA_DIR` / `CLINE_SESSION_DATA_DIR` 可改写） | **整份 JSON 文档**（`{version, updated_at, agent, sessionId, messages[], system_prompt}`，会话进行中每次落盘**整体重写**，不是 JSONL） | 轮（`role=user` **且** content 里有非空 `text` 块才开轮 —— ⚠️ `tool_result` 也是 `role:user`） | ✅ 轮内末条 `ts` − 轮首 `ts`（逐次调用耗时不落盘，`calls[].dur` 恒 0；逐工具耗时能算） | ✅ assistant 消息的 `metrics`（⚠️ **`inputTokens` 含缓存** ⇒ `tin = input−cacheRead−cacheWrite`、`tcache` = 两个 cache 桶，与 openclaw 相反）；`ctx` 恒 0（模型目录只嵌在二进制里）；失败只有 `tool_result.content[]` 的**逐项** `success`/`error` |
 | buddyext（CodeBuddy 的 **genie 扩展** —— 与上一行同一个 `codebuddy` agent，挂在它的 `sessionsExtra` 上；VSCode / CodeBuddyIDE / JetBrains 与 CodeBuddy CN 应用共用） | `%LOCALAPPDATA%\CodeBuddyExtension\Data\<acct>\<Host>/(<acct>/)?history\<wsKey>\<会话 id>\`（`<Host>` ∈ VSCode / CodeBuddyIDE / JetBrains；`<acct>` = `default` 或 36 位 uuid，**uuid 时同一串再重复一层**） | **每个会话一份 `index.json`**（`{messages[], requests[]}`，会话进行中**整份重写**）+ `messages/<消息 id>.json` **一条一个文件**（`{role, message(JSON 字符串), extra(JSON 字符串), createdAt?}`）；同级还有工作区级 `index.json` 供会话名 | 轮（**轮 = `requests[]` 的一项**，产品自己记的，不靠 role 猜） | ✅ `request.startedAt` → 该轮最晚消息时间戳。消息时间戳三取：`createdAt`(ISO) → `extra.responseId` 前 14 位（**本地时间**）→ `gen-<epoch 秒>`；⚠️ **绝不用文件 mtime** —— 整份重写会把一批消息文件的 mtime 拍平到同一瞬间（实测 mtime 差 2ms 而内容差 84s） | ✅ `request.usage`（⚠️ **`inputTokens` 含缓存**，与 cline 同、与 openclaw 相反 ⇒ `tin = input−cacheTokens−cachedWriteTokens`、`total = totalTokens = Σ 各步`）；`ctxUsed = lastTokens`；逐次 token+耗时取新版每条 assistant 的 `extra.statsSnapshot`（老方言没有 ⇒ `calls[].tin` 留 null 不印假 0）；`ctx` 恒 0；失败 = `tool-result` 的 `result.status==='error'`（`cancelled` 记中断、`skipped` 两头都不记） |
@@ -620,6 +622,121 @@
 > RPC `get_session_stats` 报的账逐份比对（本次 7 份文件全等，含那份带废弃分支的）—— 以后动 token 口径
 > 就再跑一遍这个比对，别只信 fixture。
 
+## qwen（Qwen Code）
+
+阿里通义千问团队的终端 agent（npm `@qwen-code/qwen-code`，本机实测 0.25.1），**gemini-cli 的 fork** ——
+消息形状是 Gemini 的 `parts`（不是 Anthropic 的 `content` 块），但整体是 claude 那种「一消息一行、追加式」。
+
+落盘与两个改写入口（都在源码 `Storage` 里，不是一个变量管全部）：
+
+```
+<home>/.qwen/settings.json                     ← 配置（provider/model；里面有密钥引用，**绝不读**）
+<home>/.qwen/projects/<cwd 编码>/chats/<uuid>.jsonl      ← 主源
+<home>/.qwen/projects/<cwd 编码>/chats/<uuid>.ledger.jsonl / .runtime.json  ← 排除（另一份视图 / 活死状态）
+<home>/.qwen/usage/token-usage-<YYYY-M>.jsonl  ← 全局逐次账（含后台子 agent，不是会话源）
+<home>/.qwen/usage_record.jsonl                ← 会话级汇总（测试拿它对账）
+```
+
+`QWEN_HOME` 挪走整个 `~/.qwen`，`QWEN_RUNTIME_DIR` 只挪走 `projects/`+`tmp/` 那一层 ——
+两个都在 `candidateBases` 里铺上（指哪儿认哪儿），`sessions` 存的是 **projects 根**。
+
+三条钉死的口径（`PARSER_REV.qwen` 守着，改任何一条必须 +1）：
+
+1. **`promptTokenCount` 含缓存**。自证：同一次调用 `totalTokenCount 15070 = prompt 14997 + candidates 73`，
+   而 `cachedContentTokenCount 14592` 明显是 prompt 的一部分（不含的话 total 该是 29662）。
+   ⇒ `tin = prompt − cached`、`tcache = cached`。另：`thoughtsTokenCount` **不要另加** ——
+   两次调用都满足 `total = prompt + candidates`，说明思考已经在 candidates 里，再加就每轮凭空多 20~30。
+2. **开轮只认 `type === 'user'`**。`tool_result` 行的 `message.role` 同样是 `user`（Gemini 把工具返回
+   当用户消息回给模型），按 role 判会把一次工具调用切成一整轮 —— 页面会多出「用户输入为空」的卡片。
+3. **后台子 agent 不计入**。同转录里躺着 `managed-auto-memory-extractor` 的 `api_response`
+   （实测每次会话收尾都会跑一次，白给 5~6k 输入 token）。判据用两个：`uiEvent.subagentId` 非空、
+   `prompt_id` 不含 `########`（主链是 `<会话 id>########0`，子 agent 是 `<会话 id>#<子 agent id>#0`）。
+   只用其中一个的话，将来命名一变就把后台账记到用户头上。
+
+逐次耗时/ttft 是这一家最别扭的一处：**assistant 行没有耗时字段**，而遥测行里的 `api_response` 与
+assistant 行**没有公共 id**（`response_id` 不在 assistant 上）。落盘是追加序，`api_response` 恒写在
+它对应的那条 assistant **前一行**，所以配对规则是「本轮内最近一条未消费的、`input_token_count`
+对得上的」，对不上再退「最近一条未消费的」。配不上的次数在 callsNote 里如实报，不编 0 假装有。
+
+窗口容量反而不用查表：assistant 行自带 `contextWindowSize`（本机实测 1000000），这是 qwen 比
+claude 省事的地方 —— 取不到就是 0，页面退化成只显示占用。
+
+其他两个白送的信号：`subtype:'chat_compression'`（`/compress`，进 compacts）、
+`subtype:'custom_title'`（改名，进 name）。失败轮靠 `qwen-code.api_error`（实测 `status_code:401`
++ `error_message`，**后面不跟 assistant 行** ⇒ 扫描侧必须直接吃这条遥测行，否则那一轮是「用户发问后
+一片空白」的 ok 状态）；工具失败取 `toolCallResult.status !== 'success'` 与遥测行的 `success:false`
+两个信号，只给那个工具打 ✗，不把整轮染红。
+
+> 首次接入（2026-10-12）。样本是**现场装的 qwen** 产的真件（含一次 401、一次 `ls` 退码 2 的失败工具），
+> 验收见 `test/qwen-test.mjs`。
+
+## crush（Charm 的终端 agent）
+
+`crush` 是 charmbracelet（做 bubbletea 那家）的 Go 终端 agent，谱系上接着 opencode 的会话模型，
+**但库不是 opencode 那套表**。本机实测 0.96.1（`crush dirs` + 真件核对）：
+
+```
+%LOCALAPPDATA%\crush\projects.json     ← {projects:[{path, data_dir, last_accessed}]} —— **索引**
+%LOCALAPPDATA%\crush\providers.json    ← provider/模型目录（api_key 是 "$ANTHROPIC_API_KEY" 这种引用；不读）
+<每个用过的目录>\.crush\crush.db        ← **真源在这**，不在数据目录
+<每个用过的目录>\.crush\logs\crush.log  ← 应用日志；常规级别没有逐次 token（要 --debug），不依赖
+```
+
+- 一个 agent 名下**几十份库**是常态（每项目一份），所以 `conf.sessions` 存数据目录、扫描时按
+  `projects.json` 展开逐个读（上限 200 份，只为别在扫描上失控）。POSIX 的数据目录是
+  `~/.local/share/crush`，`CRUSH_GLOBAL_DATA` 可整体改写；Windows 的**配置**目录在 `~/.config/crush`，
+  与数据目录不同一层。
+- **嗅探判据必须带列**：表名 `sessions`/`messages` 与 opencode 家族只差一个复数 `s`，光看表名会把
+  别家的库接走。硬条件是 `messages` 表同时有 `parts` 与 `is_summary_message` 两列。
+- ⚠️ **`crushRoot` 不许多一个「回落到本机数据目录」的兜底**：那样一来用户手工填任何八竿子打不着的
+  目录都会被认成 crush，认的还是这台机器那份真数据（写测试时真踩过：一条无关 agent 的配置里
+  出现了 `C:\Users\<u>\AppData\Local\crush`）。自动发现该命中数据目录靠的是 `candidateBases` 显式铺的那条。
+
+口径上最要紧的是**逐轮 token 源头就没有**。库里能拿到的只有三个**会话级**数，`messages` 表没有任何用量列、
+`parts` 里也没有 usage 块。判「那两个 token 是累计还是快照」做了对照实验：同一会话连问三轮
+（150 字长答 → 只回一个字 → 只回两个字），每轮后读 `sessions` 行 ——
+
+| 轮 | prompt_tokens | completion_tokens | cost |
+|---|---|---|---|
+| 1 | 11790 | 187 | 0.001948 |
+| 2 | 11985 | **3** | 0.003747 |
+| 3 | 11995 | **13** | 0.003757 |
+
+`completion_tokens` 会倒退（187→3→13）⇒ **不是累计**，是「最后一次调用」的 in/out 快照
+（`prompt_tokens` 11790→11985→11995 缓慢上涨，正是上下文变长的样子）；只有 `cost` 单调上涨才是会话累计。
+⚠️ crush 自己的 schema 说明里把这两列写成「会话级累计」，以实测为准。
+另外**缓存 token 完全不存**（没有列，`parts` 里也没有 usage 块；`prism_*` 那几列是 hyper 抵扣额，不是 token）
+⇒ 缓存命中这一位在 crush 上永远是空的，那是「没记」不是「命中 0」。
+⇒ 落盘 `tin/tout/tcache` 如实记 0（与 doubao 同一档）、`calls[].tin` 留 null 不印假 0，
+**不拿会话快照冒充某一轮、也不把累计 cost 按轮摊**。
+这一家的面板口径就是「条数 + 时长」，详情 callsNote 把这件事说明白。
+
+时间与顺序两个坑：
+
+- 表里的时间列是 **unix 秒**（`1791786100`），全站按毫秒读 ⇒ 入库一律 ×1000；忘了乘就是把一轮
+  显示成 1970。而 `tool_result.metadata` 里的 `start_time`/`end_time` 是**毫秒**（不同一格），
+  工具耗时优先取这对相减（实测 201ms —— 拿秒级消息时间差算会显示成 0 或 1s）。
+- 同一轮的 user 与 assistant 常常**同秒**（实测 rowid 13/14 都是 1791786765）。行序必须只按
+  `created_at` 做**稳定排序**（V8 的 sort 稳定，同秒保持 rowid = 写入序）。第一版在这里加了次级键
+  `String(id).localeCompare(...)`，uuid 把 assistant 排到了 user 前面 → 那条回复落在「还没有当前轮」
+  的阶段被丢掉，那一轮显示 0 次调用、models 空 —— 条目看起来完全正常，只有对比原库才发现。
+
+其余：一条 assistant 消息 = 一次调用（`finish.reason` = `tool_use` 的是工具步、`end_turn`/`stop` 收轮、
+`error` 标红并带 `message`+`details` 原文，含 abort/cancel 字样的记中断不标红）；工具返回是独立的
+`role='tool'` 行，按 `tool_call_id` 回填到上一条 `tool_call`（回填不上不硬造工具行）；
+`is_summary_message=1` 的那条是压缩摘要 ⇒ 进 `compacts` 与 `others`，不进正文、不算一次对话调用；
+`sessions.title` 进 `name`，但字面值 `Untitled Session` 不进（那是没命名）。
+
+> **页面对「源里不记逐轮 token」的一律不印 0**（crush / doubao / cursor / comate 同一档）：判据是四个桶全 0
+> 就当「没有这一位」，共用 `page/shared.js` 的 `hasTok()`。卡片最早就是这么做的，其余六处（会话小结、
+> 时间线小结、统计表格与柱/悬停读数、归档列表、热力图 tooltip、时间线逐次行）以前各写各的 `|| 0`，
+> 于是 crush 满屏「↑0 · ↓0 · 累计 token 0」——四个 0 读起来像「这轮没花钱」，真相是「这个产品没记」。
+> 接新的不记 token 的 agent 时**不用再加东西**：条目按 0 落盘，页面自动留空。
+
+> 首次接入（2026-10-12），验收见 `test/crush-test.mjs`。多库型 agent 有一条**已知边界**如实记着：
+> `dirTaken` 比的是路径字符串，所以「手工再指索引里的某一份库」不会被拒（同一批轮次会在侧栏出现两行）。
+> 真要防得让 `dirTaken` 认「被某个已注册索引包含」，那是服务端另一件事，不在解析器里偷偷做。
+
 ## cursor（Cursor IDE 的 Agent 转录）
 
 > **轮时间取新版每条 user 消息开头那个 `<timestamp>` 块**（形如 `Tuesday, Sep 15, 2026, 3:44 PM (UTC+8)`，
@@ -911,7 +1028,7 @@ codebuddy / workbuddy 优先按上表的 `projects/` 解析（能拿到真实 pr
 
 **内置**（开箱即读，不需要配置）：`atomcode`（`~/.atomcode/sessions`）、`codebuddy`（`~/.codebuddy/projects`）、`workbuddy`（`~/.workbuddy/projects`）。
 
-**自动发现**：服务启动与每轮扫描时，会对 `claude / codex / cursor / trae / qoder / opencode / gemini / copilot / windsurf / codearts / kimi / dsh / zcode / doubao / hermes / devin / minimax / mimocode / kilo / openclaw / cline / pi`
+**自动发现**：服务启动与每轮扫描时，会对 `claude / codex / cursor / trae / qoder / opencode / gemini / copilot / windsurf / codearts / kimi / dsh / zcode / doubao / hermes / devin / minimax / mimocode / kilo / openclaw / comate / cline / pi / qwen / crush`
 在 `~/.<name>`、`%APPDATA%\<name>`、`Application Support/<name>`、`~/.config/<name>` 等位置自动嗅探，
 命中即注册（`source:auto`）；对应目录消失时自动摘除，不报错。
 （zcode 的命中条件是 `~/.zcode/cli/db/db.sqlite` 这个库本身，按内容验证三张核心表，不是看目录名。
@@ -930,6 +1047,8 @@ cline 的命中条件见上面 cline 一节：`~/.cline` 下钻到 `data/session
 
 pi 的命中条件见上面 pi 一节：`~/.pi` 下钻到 `agent/sessions/--<cwd 编码>--/*.jsonl`，判据 = **首行**是会话头（`type:"session"` + `version` + `id`，只读头 2KB，与 openclaw 同一条约定）；`PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR` 指到哪认到哪，手工填 `~/.pi / agentDir / 会话根 / 单个项目目录` 四种写法都解到同一个**会话根**。⚠️ `sniffBase` 里必须排在 atomcode 兜底之前，否则 `~/.pi` 会被兜底认成 atomcode 而 0 条静默（dsh/kimi/openclaw/cline/buddyext 同源的老坑）。
 
+qwen 的命中条件见上面 qwen 一节：`~/.qwen` 下钻到 `projects/<cwd 编码>/chats/*.jsonl`，判据 = **首行同时带 `sessionId` 与 `provenance`**（claude 那份没有 provenance、openclaw/pi 的消息外面还包一层 `type:"message"` —— 两条都把它俩挡在外面）；`QWEN_HOME` / `QWEN_RUNTIME_DIR` 指到哪认到哪，手工填 `~/.qwen / projects 根 / 单个项目目录 / chats 目录` 都认。⚠️ `sniffBase` 里必须排在 `hasClaudeJsonl` / `hasGeminiSessions` **之前**：`~/.qwen` 同时有 `projects/` 与 `tmp/`，落到那两条判据上会被认成 claude 或 gemini 而静默 0 条（与 dsh/kimi/openclaw/cline/pi 同源的老坑）。
+crush 的命中条件见上面 crush 一节：候选是**数据目录**（Win=`%LOCALAPPDATA%\crush`、POSIX=`~/.local/share/crush`、`CRUSH_GLOBAL_DATA` 覆盖），判据 = 目录里有 `projects.json`，或 `<项目>/.crush/crush.db` 过得了列判据（页头 + `messages` 表同时有 `parts` 与 `is_summary_message`）；手工填 数据目录 / 项目目录 / `.crush` 目录 / 库文件 四种都认。⚠️ 判据**不许回落到本机数据目录**（那会把任何无关路径认成 crush、认的还是这台机器那份真数据 —— 测试里真踩过），也⚠️ 不许只按表名认（`sessions`/`messages` 与 opencode 家族只差一个复数 s）。
 ## codex
 
 > **「用户输入」有两种落点，都要认**（同一条推论：**不能**回退到 `response_item/message` 取用户输入）：
@@ -1040,7 +1159,7 @@ I6 走的是「搜索索引那一遍本来就在逐条读详情」这条零额�
 
 | 档 | 含义 | 目前 |
 |---|---|---|
-| `signal` | 详情里有 `tools[].error` 可用 | claude 系（含 qoder-cn）、dsh、zcode、traedb、opencode、kilo、codearts（取 Doer 会话库时）、hermes、devin、gemini、atomcode、kimi、buddy 系、doubao、minimax、copilot、trace |
+| `signal` | 详情里有 `tools[].error` 可用 | claude 系（含 qoder-cn）、dsh、zcode、traedb、opencode、kilo、codearts（取 Doer 会话库时，kind `codeartsdb`）、hermes、devin、gemini、atomcode、kimi、buddy 系（含 `buddyext`）、doubao、minimax、mimocode、openclaw、cline、pi、copilot、trace、**qwen**（`toolCallResult.status` 与遥测 `success:false` 两个信号都吃）、**crush**（`tool_result.is_error`） |
 | `noDetail` | 详情**压根不回工具行**（`tools: []`） | cursor、codearts（仅**回退到插件日志**时；改吃 Doer 会话库后走 `signal`，见上节） |
 | `noFlag` | 有工具行，但 `error` 恒空 / 源头不落地 | codex（`codex.mjs:172` 建好后从不赋值）、tracecode / tracework（`:335`「工具返回不落地」）、generic-jsonl（rules 无 result 规则、`output` 恒空） |
 

@@ -870,7 +870,7 @@ const app = createApp({
         const cu = ctxUsed(e);
         return {
           id: e.id, stack, mark: mark(e, ratio(e)),
-          tip: '#' + (i + 1) + '　' + fmtTime(e.time) + '\n输入 ' + fmtN(e.tin) + ' · 输出 ' + fmtN(e.tout) + ' · 缓存 ' + fmtN(e.tcache) + '（合计 ' + fmtN(tot) + '）'
+          tip: '#' + (i + 1) + '　' + fmtTime(e.time) + (hasTok(e) ? '\n输入 ' + fmtN(e.tin) + ' · 输出 ' + fmtN(e.tout) + ' · 缓存 ' + fmtN(e.tcache) + '（合计 ' + fmtN(tot) + '）' : '\n这一家的源不记 token')
             + '\n耗时 ' + fmtDur(e.dur) + compTip(e)
             + (cu ? '\n上下文占用 ' + fmtN(cu) + (e.ctx ? ' / ' + fmtN(e.ctx) + '（' + ctxPct(e) + '%）' : '') : ''),
         };

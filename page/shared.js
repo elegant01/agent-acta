@@ -36,7 +36,7 @@
 // 品牌色 / 品牌图标映射（图标来自 @lobehub/icons 静态 SVG，已本地化到 /vendor/svg/）
 const AGENT_COLORS = { atomcode: '#3b74e7', codebuddy: '#18a058', 'codebuddy-ext': '#18a058', workbuddy: '#7c5cd6', claude: '#d97757', zcode: '#0e9aa7' };
 const PALETTE = ['#3b74e7', '#18a058', '#7c5cd6', '#c26a1b', '#c2185b', '#0e9aa7', '#795548'];
-const AGENT_ICONS = { atomcode: 'logo-AtomGit-G-red.svg', claude: 'claudecode-color.svg', codebuddy: 'codebuddy-color.svg', 'codebuddy-ext': 'codebuddy-color.svg', workbuddy: 'workbuddy-color.svg', trae: 'trae-color.svg', traework: 'traework-v2.svg', cursor: 'cursor.svg', codex: 'codex-color.svg', opencode: 'opencode.svg', kilo: 'kilocode.svg', openclaw: 'openclaw-color.svg', cline: 'cline.svg', qoder: 'qoder-color.svg', 'qoder-cn': 'qoder-color.svg', codeart: 'huawei-color.svg', codearts: 'huawei-color.svg', gemini: 'gemini-color.svg', kimi: 'kimi.svg', 'zcode': 'zai.svg', 'dsh': 'deepseek-harness-whale.svg', hermes: 'hermesagent.svg', devin: 'windsurf.svg', qwen: 'qwen-color.svg', doubao: 'doubao-color.svg', hunyuan: 'hunyuan-color.svg', grok: 'grok.svg', copilot: 'copilot.svg', windsurf: 'windsurf.svg', minimax: 'minimax-code-logo.svg', mimocode: 'mimo.svg', pi: 'pi.svg' };
+const AGENT_ICONS = { atomcode: 'logo-AtomGit-G-red.svg', claude: 'claudecode-color.svg', codebuddy: 'codebuddy-color.svg', 'codebuddy-ext': 'codebuddy-color.svg', workbuddy: 'workbuddy-color.svg', trae: 'trae-color.svg', traework: 'traework-v2.svg', cursor: 'cursor.svg', codex: 'codex-color.svg', opencode: 'opencode.svg', kilo: 'kilocode.svg', openclaw: 'openclaw-color.svg', cline: 'cline.svg', qoder: 'qoder-color.svg', 'qoder-cn': 'qoder-color.svg', codeart: 'huawei-color.svg', codearts: 'huawei-color.svg', gemini: 'gemini-color.svg', kimi: 'kimi.svg', 'zcode': 'zai.svg', 'dsh': 'deepseek-harness-whale.svg', hermes: 'hermesagent.svg', devin: 'windsurf.svg', qwen: 'qwen-color.svg', doubao: 'doubao-color.svg', hunyuan: 'hunyuan-color.svg', grok: 'grok.svg', copilot: 'copilot.svg', windsurf: 'windsurf.svg', minimax: 'minimax-code-logo.svg', mimocode: 'mimo.svg', pi: 'pi.svg', crush: 'crush-color.svg' };
 // R16 遗留子项：只有图标、后端零检测的名字 —— 不会自动发现、没有解析器。
 // 用户在「添加 agent」里敲这些名字时会误以为能自动识别，必须明示（口径与需求书 R16 一致）。
 // doubao 已有解析器（R26）、hermes 已于 2026-09-21 接入（state.db SQLite + agent.log 辅源）、
@@ -49,7 +49,12 @@ const AGENT_ICONS = { atomcode: 'logo-AtomGit-G-red.svg', claude: 'claudecode-co
 // pi 已于 2026-10-12 接入（~/.pi/agent/sessions 追加式会话树）；图标取 @lobehub/icons 静态包的 pi.svg
 //   —— 单色块状 π（`fill="currentColor"`），与 cline.svg / kimi.svg / hermesagent.svg 同一写法同一来源，
 //   所以 <img> 里的着色行为与它们一致，不单独加滤镜、不改 style.css。
-const ICON_ONLY_AGENTS = new Set(['qwen', 'hunyuan', 'grok']);
+// qwen 已于 2026-10-12 接入（~/.qwen/projects/<项目编码>/chats/*.jsonl，Qwen Code = gemini-cli 的 fork）；
+//   图标沿用已有的 qwen-color.svg（这张图本来就是为它摆的，欠账到此还清）。
+// crush 已于 2026-10-12 登记手绘的 crush-color.svg（💘 心+箭，CharmTone 粉紫渐变 #FF60FF→#6B50FF，
+//   取自 Crush TUI 字标的两端色；@lobehub/icons-static-svg 1.95.1 里没有 crush / charmbracelet，
+//   本机拉包核实过）。拿到官方 svg 时直接覆盖 vendor/svg/crush-color.svg 即可，登记行不用动。
+const ICON_ONLY_AGENTS = new Set(['hunyuan', 'grok']);
 const MODEL_ICONS = [
   ['claude', 'claude-color.svg'],
   ['glm', 'zhipu-color.svg'],
@@ -194,6 +199,12 @@ const fmtAgo = t => {
 // 合计 token 一律现算：/api/session 与它的 entries[] 只给 tin/tout/tcache，**没有** total 字段
 // （服务端 sessionsAgg 是在返回前现算 total 的，这里跟它同一口径）。
 const sumTok = o => ((o && o.tin) || 0) + ((o && o.tout) || 0) + ((o && o.tcache) || 0);
+// 一家源里**根本没有逐轮 token**（crush / doubao / cursor / comate：库里没这列、转录里没 usage 块）时，
+// 四个桶会同时是 0。0 读起来像「这一轮没花钱」，真相是「这个产品没记」——卡片早就按这条判据把整栏
+// 留空（log-card 的 v-else「—」），但那句话只活在那一个模板里，于是统计 / 会话小结 / 时间线 /
+// 归档列表 / 热力图 tooltip 全在印「↑0 · ↓0」。提成一份公用判据，各处共用；与 ctx 那栏
+// 「宁可少一根条，也不拿假分母凑」是同一条约定（接新 agent 时源头不记 token 就用它，别到处 || 0）。
+const hasTok = o => !!o && ((o.total || 0) + (o.tin || 0) + (o.tout || 0) + (o.tcache || 0)) > 0;
 
 // 聚合量（按天/整个范围）用的耗时格式：拿上面那个格式会算出「30089m41s」——200 天合计 501 小时，
 // 分针读法到这儿就不可读了。单条卡片仍用 fmtDur（那里都是分钟级）。

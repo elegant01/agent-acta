@@ -76,8 +76,8 @@ AACTA.SessView = {
 
           <div class="sess-sum">
             <span><b>{{ sessCur.count }}</b> 轮</span>
-            <span>↑{{ fmtN(sessCur.tin) }} · ↓{{ fmtN(sessCur.tout) }} · 缓存 {{ fmtN(sessCur.tcache) }}</span>
-            <span>累计 token <b>{{ fmtN(sumTok(sessCur)) }}</b></span>
+            <span v-if="hasTok(sessCur)">↑{{ fmtN(sessCur.tin) }} · ↓{{ fmtN(sessCur.tout) }} · 缓存 {{ fmtN(sessCur.tcache) }}</span>
+            <span v-if="hasTok(sessCur)">累计 token <b>{{ fmtN(sumTok(sessCur)) }}</b></span>
             <!-- I12 压缩画像：会话级小结（逐轮累加），回答「一共压掉多少 / 等了多久」。
                  只有真压过才有这一格；compDrop 只有 claude 源有 ⇒ 没有就不说，不印假 0。 -->
             <span v-if="sessChart && sessChart.comp"
@@ -377,6 +377,6 @@ AACTA.SessView = {
     'toggle-turn', 'event-click', 'ov-click', 'chart-go', 'collapse-turn', 'load-full',
     'fold-json', 'fold-callout', 'open-session'],
   setup() {
-    return { fmtN, fmtDur, fmtDurBig, fmtTime, fmtAgo, sumTok, modelText, toolText, prettyJson, copyRaw, agentColor, agentIcon };
+    return { fmtN, fmtDur, fmtDurBig, fmtTime, fmtAgo, sumTok, hasTok, modelText, toolText, prettyJson, copyRaw, agentColor, agentIcon };
   }
 };

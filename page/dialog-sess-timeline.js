@@ -18,7 +18,7 @@ AACTA.DialogSessTimeline = {
     <template v-else-if="sessData">
       <div class="sess-sum">
         <span><b>{{ sessData.count }}</b> 轮</span>
-        <span>↑{{ fmtN(sessData.tin) }} · ↓{{ fmtN(sessData.tout) }} · 缓存 {{ fmtN(sessData.tcache) }}</span>
+        <span v-if="hasTok(sessData)">↑{{ fmtN(sessData.tin) }} · ↓{{ fmtN(sessData.tout) }} · 缓存 {{ fmtN(sessData.tcache) }}</span>
         <span>合计 {{ fmtDurBig(sessData.dur) }}</span>
         <span>{{ fmtTime(sessData.from) }} ~ {{ fmtTime(sessData.to) }}</span>
         <span v-if="sessData.models.length" class="sess-models">{{ sessData.models.join('、') }}</span>
@@ -103,6 +103,6 @@ AACTA.DialogSessTimeline = {
     // 但模板编译成 with(_ctx) 后只认 props / return / 已注册组件 / JS 内建（实测 Math、Date、console 能命中，
     // document、window、ElementPlus、fmtN 全是 undefined）。所以模板要用的这几只必须**列进 return**，
     // 否则渲染期抛「fmtN is not a function」，弹层直接打不开。
-    return { sessLoading, sessData, sessExpanded, sessDetailOf, sessToggle, fmtN, fmtDur, fmtDurBig, fmtTime, copyRaw, prettyJson };
+    return { sessLoading, sessData, sessExpanded, sessDetailOf, sessToggle, fmtN, hasTok, fmtDur, fmtDurBig, fmtTime, copyRaw, prettyJson };
   }
 };
