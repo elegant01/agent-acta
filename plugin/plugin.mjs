@@ -198,16 +198,22 @@ export function proxy(req, res, upstreamPath) {
         const chunks = [];
         ur.on('data', (c) => chunks.push(c));
         ur.on('end', () => {
-          copyHeaders();
-          res.end(Buffer.from(rewriteRefs(Buffer.concat(chunks).toString('utf8')), 'utf8'));
+          try {
+            copyHeaders();
+            res.end(Buffer.from(rewriteRefs(Buffer.concat(chunks).toString('utf8')), 'utf8'));
+          } catch {}
           finish();
         });
         ur.on('error', () => { try { res.statusCode = 502; res.end('agent-acta: 上游断流'); } catch {}; finish(); });
       });
     up.on('error', () => {
-      res.statusCode = 502;
-      res.setHeader('content-type', 'text/plain; charset=utf-8');
-      res.end('agent-acta: 连不上 127.0.0.1:' + cliPort + '（命令行服务刚好退了？下一条请求插件会自己接手）');
+      // 响应头已经 flush 给浏览器之后才断（SSE 半路上游被 kill，socket 吃 RST）：这时再 setHeader 就是
+      // ERR_HTTP_HEADERS_SENT，而它抛在 error 监听器里没人接 = 未捕获异常 = 整个宿主进程被带走（2026-10-10 那次崩的就是这）。
+      // 所以这一支只收尾不改口，res.end() 顺带把浏览器那条 fetch 流了结，别让它挂着。
+      try {
+        if (res.headersSent) res.end();
+        else plain(res, 502, '连不上 127.0.0.1:' + cliPort + '（命令行服务刚好退了？下一条请求插件会自己接手）');
+      } catch {}
       finish();
     });
     if (req.method === 'GET' || req.method === 'HEAD') up.end(); else req.pipe(up);   // POST 的 body 要转出去，写操作才有效
