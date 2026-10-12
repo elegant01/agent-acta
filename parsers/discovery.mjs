@@ -10,6 +10,7 @@ import { HOME, isDir, isFile, listDirCached, sqliteMod } from './shared.mjs';
 import { hasMavisSession } from './minimax.mjs';
 import { OPENCLAW_STATE_DIRNAMES, openclawTranscripts } from './openclaw.mjs';
 import { clineTranscripts } from './cline.mjs';
+import { piTranscripts } from './pi.mjs';
 import { buddyExtRoot, buddyExtWhyMissing } from './buddyext.mjs';
 // hasCursorTranscripts 里枚举转录走的是 cursor 解析器那一个函数（两种落法共用一套判定，见该函数注释）。
 // ⚠️ 这条 import 曾经漏掉过：函数体在外层 try{}catch{} 里，ReferenceError 被静默吞掉 →
@@ -185,6 +186,17 @@ function candidateBases(name, c) {
       if (oh) out.push(path.join(oh, OPENCLAW_STATE_DIRNAMES[0]));
     }
     for (const n of OPENCLAW_STATE_DIRNAMES) out.push(path.join(home, n));
+  }
+  // pi（Pi Coding Agent）：agentDir 默认 ~/.pi/agent（docs/configuration.md：PI_CODING_AGENT_DIR 可整体改写），
+  // 会话在 <agentDir>/sessions/--<cwd 编码>--/<时间>_<uuid>.jsonl；那个 sessions 还能被
+  // PI_CODING_AGENT_SESSION_DIR 或 settings.sessionDir 改名挪走 —— 所以两个环境变量都认，
+  // 铺的是「指哪儿认哪儿」的那一层，piTranscripts 自己上下探。默认摆法的 ~/.pi 由 basesFor 铺好。
+  if (name === 'pi') {
+    for (const k of ['PI_CODING_AGENT_DIR', 'PI_CODING_AGENT_SESSION_DIR']) {
+      const v = env[k] && String(env[k]).trim();
+      if (!v) continue;
+      out.push(v.startsWith('~') ? path.join(home, v.replace(/^~[\\/]?/, '')) : v);
+    }
   }
   // cline（Cline CLI 3.x）：会话在 <data>/sessions/<会话 id>/<会话 id>.messages.json，
   // data 根默认 `~/.cline/data`（basesFor 铺的 `~/.cline` 由 clineTranscripts 自己下探到 data/sessions）。
@@ -1145,6 +1157,14 @@ export function sniffBase(base) {
   //   （与 dsh / kimi / openclaw / cline 当初同源）。判据是**结构**（acct/Host/history 三层齐不齐），
   //   且只在 `<base>/Data` 存在、或 base 顺着祖先走到名为 data 的层时才付 readdir 代价 —— 见 buddyExtRoot。
   { const bx = buddyExtRoot(base); if (bx) return { kind: 'buddyext', sessions: bx, traces: null }; }
+  // pi（Pi Coding Agent）：真源是 <agentDir>/sessions/--<cwd 编码>--/<时间>_<uuid>.jsonl。
+  // 同样必须抢在 atomcode 兜底之前：手工填 ~/.pi 或 ~/.pi/agent 时，兜底看到的是「有子目录的根」，
+  // 而它找的是 <hash>/*.jsonl|*.meta 那种摆法，一条都匹配不到 → 0 条且静默
+  // （与 dsh / kimi / openclaw / cline / buddyext 当初同源）。判据是**内容**（首行必须是
+  // {"type":"session","version":…,"id":…}），名字猜错不会误接邻居的数据。
+  // ⚠️ sessions 存的是**会话根本身**（那一层可被 PI_CODING_AGENT_SESSION_DIR / settings.sessionDir
+  //    改名挪走，不能再靠 join('sessions') 拼），所以主文件把 pi 记进了 ROOT_SESSIONS_AGENTS。
+  { const pp = piTranscripts(base); if (pp) return { kind: 'pi', sessions: pp.root, traces: null }; }
   if (!isDir(base)) return null;
   // TraeCode / TraeWork 桌面版：<base>/logs/<timestamp>/window1/renderer.log
   // 必须排在所有 sessions/projects 判据之前 —— Trae CN 应用目录下没有 sessions/、projects/、

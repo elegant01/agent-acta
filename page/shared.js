@@ -36,7 +36,7 @@
 // 品牌色 / 品牌图标映射（图标来自 @lobehub/icons 静态 SVG，已本地化到 /vendor/svg/）
 const AGENT_COLORS = { atomcode: '#3b74e7', codebuddy: '#18a058', 'codebuddy-ext': '#18a058', workbuddy: '#7c5cd6', claude: '#d97757', zcode: '#0e9aa7' };
 const PALETTE = ['#3b74e7', '#18a058', '#7c5cd6', '#c26a1b', '#c2185b', '#0e9aa7', '#795548'];
-const AGENT_ICONS = { atomcode: 'logo-AtomGit-G-red.svg', claude: 'claudecode-color.svg', codebuddy: 'codebuddy-color.svg', 'codebuddy-ext': 'codebuddy-color.svg', workbuddy: 'workbuddy-color.svg', trae: 'trae-color.svg', traework: 'traework-v2.svg', cursor: 'cursor.svg', codex: 'codex-color.svg', opencode: 'opencode.svg', kilo: 'kilocode.svg', openclaw: 'openclaw-color.svg', cline: 'cline.svg', qoder: 'qoder-color.svg', 'qoder-cn': 'qoder-color.svg', codeart: 'huawei-color.svg', codearts: 'huawei-color.svg', gemini: 'gemini-color.svg', kimi: 'kimi.svg', 'zcode': 'zai.svg', 'dsh': 'deepseek-harness-whale.svg', hermes: 'hermesagent.svg', devin: 'windsurf.svg', qwen: 'qwen-color.svg', doubao: 'doubao-color.svg', hunyuan: 'hunyuan-color.svg', grok: 'grok.svg', copilot: 'copilot.svg', windsurf: 'windsurf.svg', minimax: 'minimax-code-logo.svg', mimocode: 'mimo.svg' };
+const AGENT_ICONS = { atomcode: 'logo-AtomGit-G-red.svg', claude: 'claudecode-color.svg', codebuddy: 'codebuddy-color.svg', 'codebuddy-ext': 'codebuddy-color.svg', workbuddy: 'workbuddy-color.svg', trae: 'trae-color.svg', traework: 'traework-v2.svg', cursor: 'cursor.svg', codex: 'codex-color.svg', opencode: 'opencode.svg', kilo: 'kilocode.svg', openclaw: 'openclaw-color.svg', cline: 'cline.svg', qoder: 'qoder-color.svg', 'qoder-cn': 'qoder-color.svg', codeart: 'huawei-color.svg', codearts: 'huawei-color.svg', gemini: 'gemini-color.svg', kimi: 'kimi.svg', 'zcode': 'zai.svg', 'dsh': 'deepseek-harness-whale.svg', hermes: 'hermesagent.svg', devin: 'windsurf.svg', qwen: 'qwen-color.svg', doubao: 'doubao-color.svg', hunyuan: 'hunyuan-color.svg', grok: 'grok.svg', copilot: 'copilot.svg', windsurf: 'windsurf.svg', minimax: 'minimax-code-logo.svg', mimocode: 'mimo.svg', pi: 'pi.svg' };
 // R16 遗留子项：只有图标、后端零检测的名字 —— 不会自动发现、没有解析器。
 // 用户在「添加 agent」里敲这些名字时会误以为能自动识别，必须明示（口径与需求书 R16 一致）。
 // doubao 已有解析器（R26）、hermes 已于 2026-09-21 接入（state.db SQLite + agent.log 辅源）、
@@ -46,6 +46,9 @@ const AGENT_ICONS = { atomcode: 'logo-AtomGit-G-red.svg', claude: 'claudecode-co
 //   （库里 backend_type 也是 'windsurf'）—— 同一家同一个产品，本机拿不到单独的 Devin 品牌图。
 //   将来手上有官方 devin.svg 时，放进 vendor/svg/ 再把这里改成 devin.svg 即可。
 // kilo 已于 2026-09-24 接入（~/.local/share/kilo/kilo.db，opencode 的 fork）；图标用已有的 kilocode.svg。
+// pi 已于 2026-10-12 接入（~/.pi/agent/sessions 追加式会话树）；图标取 @lobehub/icons 静态包的 pi.svg
+//   —— 单色块状 π（`fill="currentColor"`），与 cline.svg / kimi.svg / hermesagent.svg 同一写法同一来源，
+//   所以 <img> 里的着色行为与它们一致，不单独加滤镜、不改 style.css。
 const ICON_ONLY_AGENTS = new Set(['qwen', 'hunyuan', 'grok']);
 const MODEL_ICONS = [
   ['claude', 'claude-color.svg'],

@@ -64,6 +64,7 @@ import { scanHermes, hermesScanErr, hermesEntryContent } from '../parsers/hermes
 import { scanDevinDb, devinDbErr, devinDbEntryContent } from '../parsers/devindb.mjs';
 import { scanMavis, mavisEntryContent } from '../parsers/minimax.mjs';
 import { scanOpenclaw, openclawEntryContent, openclawUserText } from '../parsers/openclaw.mjs';
+import { scanPi, piEntryContent, piUserText } from '../parsers/pi.mjs';
 import { scanCline, clineScanErr, clineEntryContent } from '../parsers/cline.mjs';
 // buddyext（CodeBuddy 扩展版：VSCode / CodeBuddyIDE / JetBrains 共用的 genie 扩展，
 // %LOCALAPPDATA%\CodeBuddyExtension\Data）—— 与 parsers/buddy.mjs 那个 CodeBuddy **CLI**（~/.codebuddy）
@@ -280,7 +281,7 @@ const DEFAULT_AGENTS = {
 // traework 与 trae 都在名单里：装在同一台机器上的两个产品（Trae CN / Trae Work / Trae SOLO）
 // 各自走 NAME_ALIASES 中的不同别名，被 sniffBase 区分成 tracecode 与 tracework 两个 kind。
 // kilo 与 opencode 也是各自独立的一行：装了 KiloCode 的机器上两家库会同时在（名字不同、kind 不同）。
-const KNOWN_AGENTS = ['claude', 'codex', 'cursor', 'trae', 'traework', 'qoder', 'opencode', 'gemini', 'copilot', 'windsurf', 'codearts', 'kimi', 'dsh', 'zcode', 'doubao', 'hermes', 'devin', 'minimax', 'mimocode', 'kilo', 'openclaw', 'comate', 'cline'];
+const KNOWN_AGENTS = ['claude', 'codex', 'cursor', 'trae', 'traework', 'qoder', 'opencode', 'gemini', 'copilot', 'windsurf', 'codearts', 'kimi', 'dsh', 'zcode', 'doubao', 'hermes', 'devin', 'minimax', 'mimocode', 'kilo', 'openclaw', 'comate', 'cline', 'pi'];
 
 const agentConfs = new Map(); // name -> {kind, sessions, sessionsExtra?, traces, builtin, enabled, source, missing}
 
@@ -1125,6 +1126,8 @@ function confAvailable(c) {
 //   minimax  = <base>/v2/sessions
 //   mimocode = <base>（mimocode 应用根，库在它下面）
 //   openclaw = <base>（OpenClaw stateDir，转录在它下面的 agents/<id>/sessions/）
+//   pi       = <base>（pi 的**会话根**：默认 <agentDir>/sessions，但那层能被 PI_CODING_AGENT_SESSION_DIR
+//              改名挪走，所以存的是会话根本身，不是 agentDir —— 对它取 dirname 会爬到父目录重嗅）
 //   comate   = <base>（百度 Comate 的 store 根，chat_session_* 平铺在它下面）
 //      ⚠️ 漏了 comate 的实测病征：**每轮扫描 0 条 ↔ 3 条来回闪**。它的 sessions 是
 //      ~/.comate-engine/store，取 dirname 爬到 ~/.comate-engine —— 那底下 browser/ log/ machine/ 里
@@ -1132,7 +1135,7 @@ function confAvailable(c) {
 //      → 下一轮 candidateBases 又把它找回来注册成 comate → 无限翻转（条目一会儿有一会儿没）。
 // 重新嗅探时若对它们取 path.dirname 会爬到**上层**，从而认成隔壁 agent（mimocode 的真实事故）
 // 或退化成 atomcode。按 name 判断，不按 kind —— kind 正是可能被改坏的那个字段。
-const ROOT_SESSIONS_AGENTS = new Set(['copilot', 'minimax', 'mimocode', 'openclaw', 'comate']);
+const ROOT_SESSIONS_AGENTS = new Set(['copilot', 'minimax', 'mimocode', 'openclaw', 'comate', 'pi']);
 
 // 只用**本 agent 自己的**候选路径重新推导配置（candidateBases + sniffBase）。
 // 用途：配置里的 sessions 被别的 agent 抢走 / 被改错时，回到本源把它找回来。
@@ -1536,6 +1539,8 @@ function scanBranch(conf) {
     case 'minimax': return { kind: 'minimax', list: conf.sessions };
     // openclaw（OpenClaw）：list = stateDir（默认 ~/.openclaw），解析器内部枚举 agents/<id>/sessions/*.jsonl
     case 'openclaw': return { kind: 'openclaw', list: conf.sessions };
+    // pi（Pi Coding Agent）：list = 会话根（默认 <agentDir>/sessions），下面每个 --<cwd 编码>-- 一个项目
+    case 'pi': return { kind: 'pi', list: conf.sessions };
     case 'generic-jsonl': return { kind: 'generic-jsonl', list: conf.sessions };
     case 'buddyjsonl': return { kind: 'buddyjsonl', list: conf.sessions };
     case 'codex': return { kind: 'codex', list: conf.sessions };
@@ -1644,6 +1649,10 @@ function scanOneAgent(agent, conf, onlyFile) {
     // openclaw（OpenClaw）：<stateDir>/agents/<id>/sessions/<uuid>.jsonl，追加式会话树，逐行 off 增量续读；
     // token/模型在 assistant 消息行的 usage 里（input **不含** cache），不必依赖旁路日志（见 parsers/openclaw.mjs）。
     else if (b.kind === 'openclaw') scanOpenclaw(agent, b.list, onlyFile);
+    // pi（Pi Coding Agent）：<会话根>/--<cwd 编码>--/<时间>_<uuid>.jsonl，追加式会话树，逐行 off 增量续读；
+    // usage 里 input **不含** cache（与 openclaw 同侧），另把 kind:"cache_warm" 的用量行与压缩/分支摘要的
+    // usage 一起计入所在轮 —— 判据是 pi 自己的账按整棵树全量记（见 parsers/pi.mjs 头 ⚠️ 口径二）。
+    else if (b.kind === 'pi') scanPi(agent, b.list, onlyFile);
     // traedb：库优先 + 读不出来回退 renderer.log（两边的取舍见 scanTraeAgent）
     else if (b.kind === 'traedb') scanTraeAgent(agent, conf, onlyFile);
     // kimi 可能有多个根（CLI 的 ~/.kimi-code + 桌面版的 runtime/kimi-code/home），逐个扫
@@ -2034,6 +2043,8 @@ function entryContent(id, full) {
     if (src.kind === 'minimax') return mavisEntryContent(src, full);
     // openclaw：同 minimax —— 重读转录按 src.turn 过滤，工具按 toolCallId 回填，calls 带逐次 usage
     if (src.kind === 'openclaw') return openclawEntryContent(src, full);
+    // pi：同 openclaw —— 重读转录按 src.turn 过滤，工具按 toolCallId 回填，calls 带逐次 usage 与 durationMs
+    if (src.kind === 'pi') return piEntryContent(src, full);
     // tracecode / tracework：详情从 renderer.log 重解析指定 sessionId 的全部事件
     //（扫描只存了 entry 概要，详情页要逐事件展开；与 codearts/codex 同款「重读文件按 turn 过滤」）
     if (src.kind === 'tracecode' || src.kind === 'tracework') {
@@ -2051,7 +2062,7 @@ function entryContent(id, full) {
 // 解析结果（entryContent）仍是完整、可信的。绝不为了「都有片段」而编造。
 // 返回：{ kind, file, extractable, lines|null, note }。lines 是**原始文本行数组**（trim 后非空、未解析），
 // 下标与磁盘行号对齐（1-based 行号 = 下标+1），复现时直接 cp 这一段即可。
-const REPRO_JSONL_KINDS = new Set(['claude', 'codex', 'buddyjsonl', 'doubao', 'minimax', 'kimi', 'copilot', 'generic-jsonl', 'openclaw']);
+const REPRO_JSONL_KINDS = new Set(['claude', 'codex', 'buddyjsonl', 'doubao', 'minimax', 'kimi', 'copilot', 'generic-jsonl', 'openclaw', 'pi']);
 function reproRaw(src, e) {
   const out = { kind: src.kind, file: src.file || null, extractable: false, lines: null, note: '' };
   const fstate = files.get(src.file);
@@ -2132,6 +2143,13 @@ function isTurnStart(kind, j, e) {
     if (j.type !== 'message') return false;
     const msg = j.message || {};
     return msg.role === 'user' && !!openclawUserText(msg.content);
+  }
+  // pi：与 openclaw 同族（追加式会话树），开轮行判据同一句话 —— 但必须用**自己那份** piUserText，
+  // 两个解析器的正文清洗各自演进，共用会让复现包的分片下标与条目 src.turn 错位。
+  if (kind === 'pi') {
+    if (j.type !== 'message') return false;
+    const msg = j.message || {};
+    return msg.role === 'user' && !!piUserText(msg.content);
   }
   if (kind === 'kimi') return j.type === 'turn.prompt';
   if (kind === 'copilot') return j.type === 'user.message' && copilotTurnStart(j);
@@ -2866,7 +2884,7 @@ function sessionsAgg(agentFilter, projectFilter, range, from, to, limit, work) {
 //   tracecode/tracework 源里明写「工具返回不落地」（tracecode.mjs:335）、generic 的 rules 没有 result 规则。
 const TOOL_FAIL_TIERS = {
   signal: new Set(['claude', 'jsonl', 'dsh', 'zcode', 'traedb', 'opencode', 'kilo', 'hermes', 'devindb', 'gemini',
-    'kimi', 'buddyjsonl', 'doubao', 'minimax', 'copilot', 'trace', 'atomcode', 'openclaw', 'cline', 'buddyext']),
+    'kimi', 'buddyjsonl', 'doubao', 'minimax', 'copilot', 'trace', 'atomcode', 'openclaw', 'cline', 'buddyext', 'pi']),
   noDetail: new Set(['cursor', 'codearts']),
   noFlag: new Set(['codex', 'tracecode', 'tracework', 'generic-jsonl']),
 };

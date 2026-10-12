@@ -70,6 +70,9 @@ export const OFF_KINDS = new Set(['jsonl', 'claude', 'buddyjsonl', 'codearts', '
   // 逐行 off 续读语义与 claude/doubao 完全一致，故进 OFF_KINDS。
   // ⚠️ 同目录的 <uuid>.trajectory.jsonl 是另一份视图，扫描时按文件名显式排除（见 parsers/openclaw.mjs）。
   'openclaw',
+  // pi（Pi Coding Agent）：<会话根(--<cwd 编码>-- 分项目)/<时间>_<uuid>.jsonl 是追加式会话树，
+  // 逐行 off 续读语义与 openclaw / claude 完全一致（同源的消息形状，usage 在每条 assistant 行内）。
+  'pi',
   // generic-jsonl（R18）：声明式接入的 claude 同族逐行 jsonl，逐行 off 续读语义与 claude 完全一致。
   // 它的「**rules** 口径」版本不按 kind 走、按 **agent 走**（同一 kind 下每个 agent 的 rules 可以
   // 各不相同），版本号 rulesRev / 指纹 rulesHash 随 config 一起落盘，由主文件在 loadIndex 恢复时
@@ -213,7 +216,20 @@ export const OFF_KINDS = new Set(['jsonl', 'claude', 'buddyjsonl', 'codearts', '
 //             ③ 逐工具只有 status==='error' 算失败，cancelled 记中断、skipped 两头都不记。
 //             另：轮时间用 startedAt + 消息内容时间戳，⚠️ 不可换成文件 mtime —— 整份重写会把一批
 //             消息文件的 mtime 拍平到同一瞬间（本机实测 mtime 差 2ms 而内容差 84s）。
-export const PARSER_REV = { jsonl: 2, buddyjsonl: 5, claude: 14, kimi: 4, codex: 3, copilot: 1, codearts: 2, tracecode: 4, tracework: 4, doubao: 8, minimax: 2, 'generic-jsonl': 1, openclaw: 1, mimocode: 1, kilo: 1, comate: 2, cline: 1, buddyext: 1 };
+// pi:1 —— 首次接入（2026-10-12）。一上来就钉死、以后动必须 +1 的四条：
+//             ① usage.input **不含** cache（实样自证：第二次调用起 input:394 / cacheRead:3072），
+//                故 tin = input 直取、tcache = cacheRead + cacheWrite + **cacheWrite1h**
+//                （最后那个是 1 小时档写入，文档没写、实样里有，并进 tcache 是把它算回来）；
+//             ② **整棵树全量累加、不剪废弃分支** —— 判据是 pi 自己的账：实测带分支的样本里
+//                pi 的 get_session_stats 报 {input:4862,output:1497,cacheRead:21168,cacheWrite:6144}，
+//                与逐行把两条分支 + compaction.usage + kind:"cache_warm" 的 usage 行全加起来一字不差，
+//                只取当前叶子那条链会得到 11419（少三分之二）。跟着源产品走，页面允许同会话分支时间交错。
+//             ③ ctxUsed = 本轮最后一次**对话调用**的 input+cacheRead+cacheWrite(+1h)：预热/压缩摘要的
+//                input 不是下一轮的 prompt 占用，覆写过去就把分母读歪了；
+//             ④ compacts 可以给（pi 的 compaction 行有 tokensBefore，够页面那一列），但 **不给 rdur**：
+//                durationMs 只覆盖模型调用、不含工具执行，当「实际工作时间」用会把工具时间一起剥掉
+//                （页面 tooltip 明写「已剥掉挂机/隔夜」）。逐次耗时走详情 calls[].dur。
+export const PARSER_REV = { jsonl: 2, buddyjsonl: 5, claude: 14, kimi: 4, codex: 3, copilot: 1, codearts: 2, tracecode: 4, tracework: 4, doubao: 8, minimax: 2, 'generic-jsonl': 1, openclaw: 1, mimocode: 1, kilo: 1, comate: 2, cline: 1, buddyext: 1, pi: 1 };
 
 // index 落盘由主文件负责（IO 与调度都在那边）；解析器只报「哪个 kind 脏了」。
 // 主文件启动时调 setSaveHook 把落盘登记函数注入进来 —— 避免反向 import 主文件。

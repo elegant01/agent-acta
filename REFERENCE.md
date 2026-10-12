@@ -253,7 +253,7 @@ agentacta --install-hooks        # 一条命令写完（先 --dry 可预览）
 atomcode 要开 datalog 才有逐次明细、kimi 三份日志根、trae 的 SQLCipher 库等）完整说明见 **LOGFORMATS.md**。
 
 - **内置**（开箱即读，不需要配置）：`atomcode`（`~/.atomcode/sessions`）、`codebuddy`（**两个根**：CLI 的 `~/.codebuddy/projects` + genie 扩展的 `%LOCALAPPDATA%\CodeBuddyExtension\Data`，后者挂在 `sessionsExtra` 上、每轮重算）、`workbuddy`（`~/.workbuddy/projects`）
-- **自动发现**：服务启动与每轮扫描时对 `claude / codex / cursor / trae / qoder / opencode / gemini / copilot / windsurf / codearts / kimi / dsh / zcode / doubao / hermes / devin / minimax / mimocode / kilo / openclaw / cline`
+- **自动发现**：服务启动与每轮扫描时对 `claude / codex / cursor / trae / qoder / opencode / gemini / copilot / windsurf / codearts / kimi / dsh / zcode / doubao / hermes / devin / minimax / mimocode / kilo / openclaw / cline / pi`
   在 `~/.<name>`、`%APPDATA%\<name>`、Application Support/<name>、`~/.config/<name>` 等位置自动嗅探，命中即注册（`source:auto`），目录消失自动摘除。mimocode 的会话不在 `~/.<name>` 那套约定里，而在 `~/.local/share/mimocode/memory`（`candidateBases('mimocode')` 单独补这条真路径命中），见下面「mimocode」一节。
   注意 **zcode 是例外形态**：它的会话不在目录里，而在 SQLite 库 `~/.zcode/cli/db/db.sqlite`（只读）——所以「ZCode 聊了几轮、这里却扫不到」在 1.8.4 起不再发生
   **opencode 也是例外形态**：会话全在 `~/.local/share/opencode/opencode.db`（**明文** SQLite + WAL，**不需要密钥**），
@@ -286,6 +286,7 @@ atomcode 要开 datalog 才有逐次明细、kimi 三份日志根、trae 的 SQL
    **openclaw 也是例外形态**：会话不在 `~/.<name>` 顶层，而在 `<stateDir>/agents/<agentId>/sessions/<sessionId>.jsonl`（`stateDir` 默认 `~/.openclaw`、老版本 `.clawdbot`，`OPENCLAW_STATE_DIR`/`OPENCLAW_HOME` 可整体改写）。
    判据 = **首行**是会话头（`type:"session"` + `version` + `id`，只读头 2KB），并硬排同样以 `.jsonl` 结尾的 `<id>.trajectory.jsonl`（运行轨迹，不是会话树）；`sessions` 填 `stateDir` 本身（转录在它下面的 `agents/<id>/sessions/`），手工填 `stateDir / agents / agents/<id> / agents/<id>/sessions` 任意一层都认。⚠️ `agent/models.json` 里带 `apiKey`，解析器只取 `id` 与 `contextWindow`，绝不外带。口径见 LOGFORMATS.md 的 openclaw 一节。
    **cline 也是例外形态**（Cline CLI 3.x）：会话在 `<data>/sessions/<会话 id>/<会话 id>.messages.json`，data 根默认 `~/.cline/data`（`CLINE_DATA_DIR` / `CLINE_SESSION_DATA_DIR` 可整体改写）。它是**整份 JSON 文档、每次落盘整体重写**（不是 JSONL）⇒ 没有 off 可续读，按 `{mtime,size}`（含清单）签名整份重解析，**不进 `OFF_KINDS`**，`PARSER_REV.cline` 只管搜索分片作废。两条最容易被照抄写错的口径：① ⚠️ **`tool_result` 也是 `role:"user"`**，只看 role 切轮会把本机 8 轮的会话切成 23 轮 —— 开轮要「role=user **且** content 有非空 text 块」，正文还得剥掉 `<user_input mode="act">` / `<mode_notice>` 壳；② ⚠️ **`metrics.inputTokens` 含缓存**（cacheRead/Write 是它的子集，OpenAI 语义，与 openclaw/minimax 相反、与 hermes 同侧）⇒ `tin = input − cacheRead − cacheWrite`、`ctxUsed` 取轮内末次 `input`；`/compact` 之后它会**回落**（43662→19526），不是累计值。`ctx` 恒 0（模型目录只嵌在 144MB 的 `cline.exe` 里，盘上没有）。逐轮无状态/耗时/成本，唯一失败信号是 `tool_result.content[]` **逐项**的 `success===false`/`error`（批量调用可只错一项）。`<id>.compaction.json` 与 `sessions.db` 都不读（压缩是纯投影、不改全量日志）；⚠️ `data/settings/providers.json` 是**明文 apiKey**，一个字节都不许读。口径见 LOGFORMATS.md 的 cline 一节。
+   **pi 也是例外形态**（Pi Coding Agent）：会话在 `<agentDir>/sessions/--<cwd 编码>--/<创建时间>_<会话 id>.jsonl`，`agentDir` 默认 `~/.pi/agent`（`PI_CODING_AGENT_DIR` 可整体改写；会话根还能被 `PI_CODING_AGENT_SESSION_DIR` 或 `settings.sessionDir` 改名挪走 ⇒ `sessions` 存的是**会话根本身**，因此记在 `ROOT_SESSIONS_AGENTS` 里）。它是与 openclaw 同源的**追加式会话树**（进 `OFF_KINDS`，逐行 off 续读），三条最容易照抄写错的口径：① ⚠️ **账按整棵树全量累加、不剪废弃分支** —— 判据是 pi 自己 `/session` 的数字（实样比对：全量 = pi 报的 33671，只取当前叶子链会得到 11419），所以 `usage`(cache_warm)、`compaction.usage`、`branch_summary.usage` 一律计入所在轮；② ⚠️ `usage.input` **不含** cache，且实样多一个文档没写的 `cacheWrite1h` ⇒ `tcache = cacheRead + cacheWrite + cacheWrite1h`；③ `context_edit{replacement:null}` 指向的那条尝试已被 pi 的 overflow 恢复摘出后续上下文，**token 真花过** ⇒ 照常计、详情点明，且这类行写在被摘除条目**之后**（详情侧要先扫一遍）。ctx 分母来自 `models-store.json`（扁平 `{provider:{models[]}}`）与 `models.json`（**嵌在 `providers` 下**，两份形状不同，照抄前者会全 0），⚠️ 两份都带 `apiKey`，只取 `id`/`contextWindow`。**不设 `rdur`**：`durationMs` 不含工具执行，当「实际工作时间」会把工具时间一起剥掉；逐次耗时走详情 `calls[].dur`。项目名取会话头 `cwd`，绝不反解目录名（`/ \ :` 都编码成 `-`，Windows 上有歧义）。口径见 LOGFORMATS.md 的 pi 一节。
 - **手动添加**：侧栏 Agent 标题右侧 `+`，填名字（留空路径自动探测）或直接指定 `sessions` / `projects` / `traces` 目录
 - 目录在但格式没认出来 → 用 `GET /api/diagnose`（侧栏「环境诊断」）逐条看原因
 
@@ -806,7 +807,7 @@ qoder 与别家混比时，「积分」行的别家一侧、Token 行的 qoder �
   ① 能切：`extractable:true` + `lines[]`，`note` 里写清「本文件第 N–M 行（1-based，与磁盘一致，空行已跳过）」；
   ② 源不是单文件 JSONL（数据库 / 多帧压缩 / 内存转录 / 多文件）：只给 `file` 路径 + 一句说明；
   ③ 源文件未载入内存（还没扫到或已淘汰）、或按开轮判定定位不到那一轮（源被轮转/截断）：同样退回说明文字。
-  ②③ 不是 bug，是设计边界 —— 能切的这九家：`claude / codex / buddyjsonl / doubao / minimax / kimi / copilot / generic-jsonl / openclaw`。
+  ②③ 不是 bug，是设计边界 —— 能切的这十家：`claude / codex / buddyjsonl / doubao / minimax / kimi / copilot / generic-jsonl / openclaw / pi`。
 - 坏 id 或条目已淘汰 → **404** `{ ok:false, error:'找不到该条目…' }`。
 
 **「原始片段」的归轮口径**：从这一轮的**用户输入行**起，到**下一轮开始前**止，含该轮内的模型响应、工具调用与

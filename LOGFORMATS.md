@@ -20,6 +20,7 @@
 | minimax（MiniMax Mavis 本地运行时） | `~/.minimax/v2/sessions/YYYY/MM/DD/<HH-MM-SS-mmm-session_<id>>/messages.jsonl` | 每消息一行（Anthropic 风格 wrapper：`{message_id, turn_id, message:{…}}`）；同目录 `manifest.json` / `llm-call.json` | 轮（`message.role=user` 开轮，同 `turn_id` 的多 assistant/toolResult 归本轮） | ⚠️ 取下一轮 user 时间差（末轮 0）；**逐次调用耗时源头不落盘**，`calls[].dur` 恒 0 | ✅ assistant 行 `message.usage`（**`tin = input` 直接取——input 不含 cache**，tcache=cacheRead）；ctx 分母 = 同目录 `llm-call.json` 的 `maxTokens`（128000） |
 | mimocode（记忆/检查点类 agent） | `~/.local/share/mimocode/mimocode.db`（Drizzle/SQLite，**真源**）；`memory/` 下那些 `checkpoint.md`/`notes.md`/`MEMORY.md` 是库导出的展示层，仅作库读不动时的只读兜底 | SQLite：`session`(一次会话) / `message`(一条消息，**不是一轮**，`data` 含 `role`/`time.{created,completed}`/`tokens.{input,output,reasoning,cache}`/`cost`/`finish`/`error`；**assistant 的模型在顶层 `modelID`/`providerID`，user 才是 `model.{providerID,modelID}`**) / `part`(`data.type` ∈ text/reasoning/tool/step-start/step-finish；tool 碎片带 `callID`/`tool`/`state.{status,input,output}`/`time.{start,end}`) / `project`(`worktree`) | 轮（**一条 user `message` 开一轮**，其后所有 assistant `message` 并入该轮 —— 与 opencode 同款；首条非 user 也算一轮） | ✅ 轮内最早 `message.data.time.created`（**毫秒，原样透传**，与全项目 13 位毫秒口径一致） | ✅ 逐次累加：`tin=Σtokens.input` / `tout=Σ(tokens.output+reasoning)` / `tcache=Σ(cache.read+cache.write)` / `total` 优先取库自带 `tokens.total`（实测 = input+output+reasoning+cache）；`rounds=calls=`轮内 assistant message 数，`tools=`轮内 tool 碎片数，`state.status==='error'` 的碎片 → 轮 `status='error'`；`dur` = 轮内 (最晚 completed − 最早 created)，**毫秒**（与 claude/opencode 同口径，页面 `fmtDur` 按毫秒读）；`models` 取轮内 assistant 顶层 `modelID`（缺则 user 的 `model.modelID`）；`nollm` = 轮内无 assistant（用户刚发问）；详情 `user` **剥掉 `<system-reminder>` 注入块**（真用户输入常只有注入块的百分之一），`calls[]` 给逐次 LLM 调用明细；`ctx` 恒 0（库里没有窗口字段，页面按查表退化）。库读不动时回退 markdown 层（token/工具恒 0，详情 `note` 说明）。⚠️ **`PARSER_REV.mimocode` 管的是搜索分片**（本 kind 不落 index），改轮口径必须 bump 它 —— 否则老分片按旧 `turn` 下标返回错轮的正文且不会自愈 |
 | openclaw（OpenClaw） | `<stateDir>/agents/<agentId>/sessions/<sessionId>.jsonl`（`stateDir` 默认 `~/.openclaw`，老版本 `.clawdbot`，`OPENCLAW_STATE_DIR` 可整体改写） | 追加式**会话树**逐行 JSON：首行会话头（`{"type":"session","version":3,…}`）→ `message` 行（user/assistant/toolResult）→ `session_info`/`model_change`/`custom`/`compaction` 等标记行 | 轮（`message.role=user` 且正文非空开轮，下一条 user 收轮；空用户消息不开轮） | ⚠️ 轮级 = 下一轮 user 时间差（末轮 0）；转录不落逐次调用耗时，`calls[].dur` 恒 0 | ✅ assistant 行 `message.usage`（**`tin = input` 直接取 —— 源码写死 input 不含 cache**，`tcache = cacheRead+cacheWrite`）；ctx 分母 = 同 agent `agent/models.json` 里该模型的 `contextWindow`（取不到 → 0，退化为只显示占用） |
+| pi（Pi Coding Agent） | `<agentDir>/sessions/--<cwd 编码>--/<创建时间>_<sessionId>.jsonl`，`agentDir` 默认 `~/.pi/agent`（`PI_CODING_AGENT_DIR` 可改写；会话根还能被 `PI_CODING_AGENT_SESSION_DIR` 或 `settings.sessionDir` 改名挪走 ⇒ index 里存的是**会话根本身**） | 追加式**会话树**逐行 JSON：首行会话头 → `message`（user/assistant/toolResult）→ `model_change`/`thinking_level_change`/`session_info`/`usage`/`compaction`/`branch_summary`/`context_edit`/`label` | 轮（`message.role=user` 且正文非空开轮；空用户消息不开轮） | ✅ **逐次调用现成 `message.durationMs`**（openclaw 那一族没有，它的 `calls[].dur` 恒 0）；轮级 = 下一轮 user 时间差（末轮 0） | ✅ assistant 行 `usage`（**`tin = input` 直接取 —— input 不含 cache**，`tcache = cacheRead+cacheWrite+cacheWrite1h`）；⚠️ **整棵树全量累加、不剪废弃分支**，且 `usage`(cache_warm) / `compaction.usage` / `branch_summary.usage` 都计入所在轮 —— 判据是 pi 自己 `/session` 的账，逐文件实样比对一致；ctx 分母 = `models-store.json`（扁平）+ `models.json`（挂在 `providers` 下，**两份形状不一样**） |
 | copilot（GitHub Copilot CLI） | `~/.copilot/session-state/<sessionId>/events.jsonl`；同根 `session-store.db` + WAL | 每行一个结构化事件：`session.start` / `user.message` / `assistant.message` / `assistant.turn_end`；用量库为 `assistant_usage_events` | 轮（`turnId` 分组） | ✅ 事件时间戳；SQLite 用量表补逐次 duration/TTFT | ✅ `assistant_usage_events` 的 input/output/cache/reasoning；库不可读时正文仍可显示 |
 | cline（Cline CLI 3.x） | `<data>/sessions/<会话 id>/<会话 id>.messages.json`（data 根默认 `~/.cline/data`；`CLINE_DATA_DIR` / `CLINE_SESSION_DATA_DIR` 可改写） | **整份 JSON 文档**（`{version, updated_at, agent, sessionId, messages[], system_prompt}`，会话进行中每次落盘**整体重写**，不是 JSONL） | 轮（`role=user` **且** content 里有非空 `text` 块才开轮 —— ⚠️ `tool_result` 也是 `role:user`） | ✅ 轮内末条 `ts` − 轮首 `ts`（逐次调用耗时不落盘，`calls[].dur` 恒 0；逐工具耗时能算） | ✅ assistant 消息的 `metrics`（⚠️ **`inputTokens` 含缓存** ⇒ `tin = input−cacheRead−cacheWrite`、`tcache` = 两个 cache 桶，与 openclaw 相反）；`ctx` 恒 0（模型目录只嵌在二进制里）；失败只有 `tool_result.content[]` 的**逐项** `success`/`error` |
 | buddyext（CodeBuddy 的 **genie 扩展** —— 与上一行同一个 `codebuddy` agent，挂在它的 `sessionsExtra` 上；VSCode / CodeBuddyIDE / JetBrains 与 CodeBuddy CN 应用共用） | `%LOCALAPPDATA%\CodeBuddyExtension\Data\<acct>\<Host>/(<acct>/)?history\<wsKey>\<会话 id>\`（`<Host>` ∈ VSCode / CodeBuddyIDE / JetBrains；`<acct>` = `default` 或 36 位 uuid，**uuid 时同一串再重复一层**） | **每个会话一份 `index.json`**（`{messages[], requests[]}`，会话进行中**整份重写**）+ `messages/<消息 id>.json` **一条一个文件**（`{role, message(JSON 字符串), extra(JSON 字符串), createdAt?}`）；同级还有工作区级 `index.json` 供会话名 | 轮（**轮 = `requests[]` 的一项**，产品自己记的，不靠 role 猜） | ✅ `request.startedAt` → 该轮最晚消息时间戳。消息时间戳三取：`createdAt`(ISO) → `extra.responseId` 前 14 位（**本地时间**）→ `gen-<epoch 秒>`；⚠️ **绝不用文件 mtime** —— 整份重写会把一批消息文件的 mtime 拍平到同一瞬间（实测 mtime 差 2ms 而内容差 84s） | ✅ `request.usage`（⚠️ **`inputTokens` 含缓存**，与 cline 同、与 openclaw 相反 ⇒ `tin = input−cacheTokens−cachedWriteTokens`、`total = totalTokens = Σ 各步`）；`ctxUsed = lastTokens`；逐次 token+耗时取新版每条 assistant 的 `extra.statsSnapshot`（老方言没有 ⇒ `calls[].tin` 留 null 不印假 0）；`ctx` 恒 0；失败 = `tool-result` 的 `result.status==='error'`（`cancelled` 记中断、`skipped` 两头都不记） |
@@ -520,6 +521,65 @@
 >
 > `PARSER_REV.openclaw = 1`（2026-09-23 首次接入即定档）。回归见 `test/openclaw-test.mjs`。
 
+## pi（Pi Coding Agent）
+
+> **落盘位置**：`<agentDir>/sessions/--<cwd 编码>--/<创建时间>_<sessionId>.jsonl`，`agentDir` 默认 `~/.pi/agent`
+> （Windows 与 mac/Linux 同；`PI_CODING_AGENT_DIR` 可整体改写，会话根还能被 `PI_CODING_AGENT_SESSION_DIR`
+> 或 `settings.sessionDir` 改名挪走 ⇒ **conf.sessions 存的是会话根本身**，不是 agentDir，所以它记在
+> `ROOT_SESSIONS_AGENTS` 里 —— 对它取 dirname 会爬到上层重嗅）。
+> 一个项目一个目录，目录名是 cwd 编码（去掉前导分隔符，`/ \ :` 一律换成 `-`，前后各补 `--`）。
+> ⚠️ **项目名只取首行会话头的 `cwd`**，绝不反解目录名：编码把三种分隔符都换成 `-`，
+> `F:\a\b` 与 `F:/a/b` 撞名，反解出来的东西在 Windows 上有歧义。
+>
+> **格式与 openclaw 同源**（llm-core 的 `Message` + 追加式会话树），逐行条目类型：
+> `session`（首行，唯一没有 `parentId`）、`message`（**唯一带对话正文**）、`session_info`（`/name` 起的标题 → entry.name）、
+> `model_change` / `thinking_level_change`、`usage`（`kind:"cache_warm"` 等，**不进上下文但进会话总量**）、
+> `compaction`（带 `tokensBefore` 与 `usage`）/ `branch_summary`（`/tree` 导航留下的废弃分支）、
+> `context_edit`（`{targetId, replacement}` —— 把某条早先条目从**后续**上下文里摘掉或替换，原条目不动）、
+> `custom` / `custom_message` / `label`。除 `session` 与 `message` 外都不开轮、不进正文。
+>
+> **message 三种角色**：`user`（content 是字符串**或** `[{type:"text"}]`）、`assistant`（content 可含
+> `text`/`thinking`/`toolCall`，`arguments` 是**对象**；另带 `api`/`provider`/`model`/`usage`/`stopReason`/
+> **`durationMs`**/`thinkingLevel`/`rawStopReason`）、`toolResult`（**每条是一个独立条目**，自带
+> `toolCallId`/`toolName`/`isError`，按 id 回填上一条 assistant 的 toolCall）。
+> ⚠️ 工具块叫 `toolCall` 不叫 `tool_use`；`stopReason` 是 camelCase（`toolUse`/`stop`/`length`/`error`/`aborted`），
+> `rawStopReason` 才是上游原值。
+>
+> **token 口径：`tin = input` 直接取，input 不含 cache**（实样自证：同一会话第二次调用起
+> `input:394 / cacheRead:3072`，命中部分单列）⇒ `tcache = cacheRead + cacheWrite + cacheWrite1h`。
+> ⚠️ `cacheWrite1h` 是 1 小时档缓存写入，**官方文档没写、实样里有**，漏了它就是少算最长寿命那一档。
+>
+> **⚠️ 口径核心：整棵树全量累加，不剪废弃分支。** 判据不是审美，是 pi 自己的账：实测一份带废弃分支的
+> 会话里 pi 的 `/session`（RPC `get_session_stats`）报 `{input:4862, output:1497, cacheRead:21168,
+> cacheWrite:6144}`，与逐行把两条分支 + `compaction.usage` + `kind:"cache_warm"` 的 `usage` 行全加起来
+> **一字不差**；只取当前叶子那条链会得到 11419（少三分之二）。⇒ 侧栏允许同一会话的两条分支时间交错，
+> 那是数据本来的形状。`usage` / `compaction` / `branch_summary` 三种「不进上下文但进总量」的行一律计入所在轮。
+>
+> **`context_edit{replacement:null}`**：pi 的 overflow 恢复会把失败的尝试（实测形态是
+> `stopReason:"length"` + `output:1` 的截断尝试）从后续上下文里摘掉，**token 已经花过**。
+> ⇒ 照常计 token，详情里点明它被摘出上下文、不算成功正文。⚠️ 这类行永远写在它摘除的那条**之后**，
+> 详情侧必须先单独扫一遍收集 `targetId`，在主循环里「遇到再收」就永远标不上。
+>
+> **ctx 分母两份文件，形状不一样**：`models-store.json` 是 `{provider:{models[]}}` 扁平，
+> `models.json` 把 provider 挂在 `{providers:{…}}` 下面（真机第一版就是照抄前者导致 ctx 全 0）。
+> 后者覆盖前者（与 pi 自己的 precedence 一致）。⚠️ 这两份都带 `apiKey` —— 解析器**只取 id 与
+> `contextWindow`**，绝不把整份内容带进任何日志或响应（`test/pi-test.mjs` G 段守）。取不到 → ctx 留 0，
+> 页面退化为只显示占用。
+>
+> **不设 `rdur`**：`durationMs` 只覆盖模型调用本身、不含工具执行，拿它当「实际工作时间」会把工具时间
+> 一起剥掉（页面 tooltip 明写「已剥掉挂机/隔夜」）。逐次耗时走详情 `calls[].dur`。
+> `compacts` 可以给（`compaction` 行数，页面那三处读取全是 `v-if="e.compacts"`，pi 没有的
+> `compAuto/compManual` 行自动不出现）。
+>
+> **失败轮两门判据**（同 openclaw）：① assistant `stopReason==="error"`（带 `errorMessage`/`errorCode`，
+> 详情原样带出）；② `toolResult.isError=true`。`aborted` 与 `status` **独立**，只标 `aborted`；
+> `length`（触输出上限被截断）只在 callsNote 注明。
+>
+> `PARSER_REV.pi = 1`（2026-10-12 首次接入即定档，四条一上来钉死的口径列在 `parsers/shared.mjs`）。
+> 回归见 `test/pi-test.mjs`。另有一条**对账口径**要守住：把本机真实生成的 pi 会话逐文件求和，与 pi 自己
+> RPC `get_session_stats` 报的账逐份比对（本次 7 份文件全等，含那份带废弃分支的）—— 以后动 token 口径
+> 就再跑一遍这个比对，别只信 fixture。
+
 ## cursor（Cursor IDE 的 Agent 转录）
 
 > **轮时间取新版每条 user 消息开头那个 `<timestamp>` 块**（形如 `Tuesday, Sep 15, 2026, 3:44 PM (UTC+8)`，
@@ -811,7 +871,7 @@ codebuddy / workbuddy 优先按上表的 `projects/` 解析（能拿到真实 pr
 
 **内置**（开箱即读，不需要配置）：`atomcode`（`~/.atomcode/sessions`）、`codebuddy`（`~/.codebuddy/projects`）、`workbuddy`（`~/.workbuddy/projects`）。
 
-**自动发现**：服务启动与每轮扫描时，会对 `claude / codex / cursor / trae / qoder / opencode / gemini / copilot / windsurf / codearts / kimi / dsh / zcode / doubao / hermes / devin / minimax / mimocode / kilo / openclaw / cline`
+**自动发现**：服务启动与每轮扫描时，会对 `claude / codex / cursor / trae / qoder / opencode / gemini / copilot / windsurf / codearts / kimi / dsh / zcode / doubao / hermes / devin / minimax / mimocode / kilo / openclaw / cline / pi`
 在 `~/.<name>`、`%APPDATA%\<name>`、`Application Support/<name>`、`~/.config/<name>` 等位置自动嗅探，
 命中即注册（`source:auto`）；对应目录消失时自动摘除，不报错。
 （zcode 的命中条件是 `~/.zcode/cli/db/db.sqlite` 这个库本身，按内容验证三张核心表，不是看目录名。
@@ -827,6 +887,8 @@ minimax 的命中条件见上面 minimax 一节：`~/.minimax` 下钻到 `v2/ses
 openclaw 的命中条件见上面 openclaw 一节：`stateDir`（`OPENCLAW_STATE_DIR` › `OPENCLAW_HOME/.openclaw` › `~/.openclaw` › 老的 `~/.clawdbot`）下钻到 `agents/<id>/sessions/*.jsonl`，判据 = **首行**是会话头（`type:"session"` + `version` + `id`，只读头 2KB），并硬排同样以 `.jsonl` 结尾的 `<id>.trajectory.jsonl`；手工填 `stateDir / agents / agents/<id> / agents/<id>/sessions` 任意一层都认。
 kilo 的命中条件见上面 kilo 一节：认 `~/.local/share/kilo/kilo.db` 文件本身，判据 = 页头 + 核心三表 `session`/`message`/`part` 齐 **且** 命中自有扩展表 `kilo_board` / `kilo_board_message` 之一（**反向排除**：opencode 判据也要排掉带 `kilo_board*` 的库）；`sniffBase` 里 kilo 排在 opencode **之前**，两者在真实库上互为假。
 cline 的命中条件见上面 cline 一节：`~/.cline` 下钻到 `data/sessions/<会话 id>/`，判据 = 文件名以 `.messages.json` 结尾 **+** 头 2KB 里同时出现 `"sessionId"` 与 `"messages": [`（整份 JSON 是 pretty-printed，头几个键必在最前，所以只读 2KB）；`sniffBase` 里必须排在 atomcode 兜底之前，否则手工填 `…/data/sessions` 会被认成 atomcode 而 0 条静默。VS Code 系满地的 `nls.messages.json`（顶层是数组）被这条判据挡在外面。
+
+pi 的命中条件见上面 pi 一节：`~/.pi` 下钻到 `agent/sessions/--<cwd 编码>--/*.jsonl`，判据 = **首行**是会话头（`type:"session"` + `version` + `id`，只读头 2KB，与 openclaw 同一条约定）；`PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR` 指到哪认到哪，手工填 `~/.pi / agentDir / 会话根 / 单个项目目录` 四种写法都解到同一个**会话根**。⚠️ `sniffBase` 里必须排在 atomcode 兜底之前，否则 `~/.pi` 会被兜底认成 atomcode 而 0 条静默（dsh/kimi/openclaw/cline/buddyext 同源的老坑）。
 
 ## codex
 
