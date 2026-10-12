@@ -10,7 +10,7 @@
 | atomcode | `~/.atomcode/sessions` | `<hash>/<uuid>.meta` + `.jsonl` | 轮；**开了 datalog 就能下钻到每次调用** | ✅ 轮级 | ✅ 轮级汇总；datalog 给逐次真实账 |
 | claude | `~/.claude/projects/<slug>/*.jsonl` | 每消息一行 | 轮（按 user 消息聚合） | ⚠️ 相邻时间戳推算 | ✅ 逐请求累加 |
 | codex | `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` | 事件流（**用户输入有两种落点**，见下） | 轮（task_started 分界） | ✅ 时间戳差值 | ✅ 逐次调用 |
-| codearts | `%APPDATA%/codearts-agent/User/logs` | 文本日志 | 轮 | ✅ | ✅ |
+| codearts | 两份落盘择一：**Doer 会话库** `~/.codeartsdoer/codearts-data/opencode.db`（kind `codeartsdb`，优先）› 插件文本日志 `%APPDATA%/codearts-agent/User/logs`（kind `codearts`，回退） | 库 = opencode 同族 `session/message/part`（**老世代**：session 无 `path/agent/model`、role/tokens/finish 全在 data JSON 里）；日志 = 文本事件流 | 轮（库里一条 user message 开一轮；日志按 `AgentCore question` 开轮） | ✅ 库：`message.data.time.created/completed` + part 时间给逐次 dur/ttft；日志：时间戳差值 | ✅ 两源同口径 `tout = output + **reasoning**`（日志源以前把 reasoning 丢了，见 `PARSER_REV.codearts = 3`）；`tcache = cache.read + cache.write` |
 | codebuddy / workbuddy | `~/.codebuddy/projects`、`~/.workbuddy/projects` | `<slug>/<会话 id>.jsonl`，每事件一行 | 轮（按 user 消息聚合） | ✅ 轮级 `durationMs` | ✅ 逐次调用累加（含缓存） |
 | gemini | `~/.gemini/tmp/<项目 slug>/` | `chats/session-*.jsonl`（会话正文，**新版 CLI 的行式格式**）+ `logs.json`（提示词流水，兜底） | 轮（按 user 消息聚合） | ✅ 时间戳差值 | ✅ 会话文件里有；仅剩 logs.json 的老会话没有 |
 | cursor | `~/.cursor/projects/<项目 slug>/agent-transcripts/<会话 id>/<同名>.jsonl`（也认平铺的 `agent-transcripts/<名>.jsonl`） | 每行 `{role, message}`，只有 text 块；新版另有 `<timestamp>` 与 `turn_ended` | 轮（按 user 消息聚合） | ❌ `dur` 恒为 0（源里的逐轮时间戳对不齐，见下面 cursor 一节）；**轮时间**另取新版每条 user 开头的 `<timestamp>`，老版退回转录文件 mtime | ❌ 没有（模型名与上下文占用另从 Cursor IDE 的 `state.vscdb` 取，见下）；**逐轮 token 只能靠注入 `stop` 钩子采**（侧栏 cursor 行的图标按钮，采到才有，见下面 cursor 一节） |
@@ -178,6 +178,46 @@
 > 与 opencode 一致：改轮口径要 bump 它，否则老分片按旧 `turn` 下标返回错轮正文。
 > 只读纪律同 opencode：`DatabaseSync(..., {readOnly:true})`、查完即关、不 checkpoint；
 > 读失败（独占锁/损坏）保留上轮数据并把原因写进 `kiloScanErr`，不崩、不误报「未安装」。
+
+## codearts（华为 CodeArts：插件日志 + Doer 会话库两份落盘，2026-10-12 起库优先）
+
+> **一家三个宿主，别当成三个 agent**（本机实测）：`codearts-agent`（IDE 插件，写 `%APPDATA%\codearts-agent\User\logs\CodeArts Agent-<pid>-<date>.log`）、
+> **CodeArts Doer**（VS Code 那套，数据根 `~/.codeartsdoer`，会话在 `codearts-data/opencode.db`）、
+> CodeArts Space/Work（桌面 App：`Roaming\codeartsspace` + `~/.codeartswork/kernel/sessions/<项目>/<uuid>/meta.json`，本机只有 1 份 ⇒ 暂未接）。
+> `~/.codearts-doer-for-coding` 只有 `argv.json`+`extensions`，是 VS Code 用户目录、**不是会话源**。
+>
+> **为什么两份落盘合成侧栏一行、且二选一**：日志与库是**同一批调用的两种序列化** —— 本机实测日志侧 20 条轮的
+> `sessionID` 与轮时间 **20/20** 都能在库里对上，而库里另有 617 个日志根本看不到的会话（日志只留约 30 天）。
+> 分成两行 = 把同一批会话数两遍；所以规则是「**库优先、日志回退**」，与 `traedb` › `renderer.log` 同一套做法
+> （`scanCodeartsAgent`）。kind 仍是 `codearts`，库那半的 kind 是 `codeartsdb`、条目 id 前缀 `cadb#`。
+>
+> ⚠️ **Doer 的库文件名字面就叫 `opencode.db`**，而且 `session/message/part/event/event_sequence` 五张表全为真 ——
+> 光按 opencode 的判据会被抢走（侧栏于是多一条假的「opencode 会话」）。两家靠独有表互斥：
+> `CODEARTS_DOER_ONLY_TABLES = cag_session_extra / cag_message_extra / cag_file_diff / digital_avatars`，
+> `opencodeDbVerify` 反向排除，且 `sniffBase` 里 Doer 排在 kilo / opencode **之前**。
+>
+> **老世代 schema，复用时两处必须让路**（都由本机真件踩出）：① `session` 没有 `path/agent/model/cost/tokens_*` 列、
+> `message` 没有 `role` 列 ⇒ 家族主体原来写死列名的 `SELECT` 整条失败（`no such column: path`）→ 恒 0 条；
+> ② `part` 少一列时那句写死列名的 SELECT 失败被 `|| []` **静默**吞掉，病征是「条目都在但工具数与 ttft 全 0」。
+> 现在三处一律 `SELECT *`（`parsers/opencode.mjs`），fork 的 fixture 特意不建 `part.time_updated` 守着这条。
+>
+> **token 与轮口径**：逐条 assistant `message.data.tokens`（`input` / `output` / `reasoning` / `cache.read|write`），
+> 一条 user message 开轮、轮内多条 assistant = 多步工具循环；**`tout = output + reasoning`**（家族口径），
+> 日志源原本把 `reasoning` 正则抓到却丢掉 ⇒ 一并改齐并 bump `PARSER_REV.codearts = 3`（否则「库读不动退回日志」
+> 会让同一行的 tout 凭空少约 20%）。`cost` 本机恒 0（内部计价）⇒ 不进费用口径。
+>
+> **失败与中断**：`error.name = "MessageAbortedError"` 且 `finish` 为 null 是**用户按了停止** ⇒ 记 `canceled` 不记 error
+> （本机 250 条 error 里 207 条是这种；家族原来只看 `finish`，会把它们染成失败 —— 已修）。剩下的 error 多来自
+> **轮内有失败工具**（`part.state.status='error'`，家规：与 zcode/opencode/kilo 一致），本机 2484 个失败工具里
+> `read`/`edit`/`glob`/`grep` 占大头（读不存在的文件、glob 空匹配都算）⇒ 这一行的 error 率天然比「只有 `session.error`
+> 才算失败」的日志源时代高，**不是回归**；诊断 note 会写清现在用的是哪一份。
+>
+> **不读的东西**：`codearts-data/storage/session_diff/ses_*.json` 是**文件改动快照**（抽一份内容是 `[]`）、
+> `codearts.json` / `kernel.jsonc` 是配置（provider 与模型名）—— 一律不读，`test/codeartsdb-test.mjs` 用 canary 守着。
+>
+> `PARSER_REV.codeartsdb = 1`（与 kilo 同理：本 kind 不落 index，这条只管搜索分片作废）。
+> 回归见 `test/codeartsdb-test.mjs`（A 认领与反向排除 / B 库优先不双计 / C token / D canceled 与工具失败 /
+> E 详情逐次 / F 回退与 note 说清 / G canary 与复现包）。
 
 ## hermes（Hermes Agent）
 
@@ -1000,8 +1040,8 @@ I6 走的是「搜索索引那一遍本来就在逐条读详情」这条零额�
 
 | 档 | 含义 | 目前 |
 |---|---|---|
-| `signal` | 详情里有 `tools[].error` 可用 | claude 系（含 qoder-cn）、dsh、zcode、traedb、opencode、kilo、hermes、devin、gemini、atomcode、kimi、buddy 系、doubao、minimax、copilot、trace |
-| `noDetail` | 详情**压根不回工具行**（`tools: []`） | cursor、codearts |
+| `signal` | 详情里有 `tools[].error` 可用 | claude 系（含 qoder-cn）、dsh、zcode、traedb、opencode、kilo、codearts（取 Doer 会话库时）、hermes、devin、gemini、atomcode、kimi、buddy 系、doubao、minimax、copilot、trace |
+| `noDetail` | 详情**压根不回工具行**（`tools: []`） | cursor、codearts（仅**回退到插件日志**时；改吃 Doer 会话库后走 `signal`，见上节） |
 | `noFlag` | 有工具行，但 `error` 恒空 / 源头不落地 | codex（`codex.mjs:172` 建好后从不赋值）、tracecode / tracework（`:335`「工具返回不落地」）、generic-jsonl（rules 无 result 规则、`output` 恒空） |
 
 后两档在页面上**一律不画 0**：那里的空是「没有这个信息」，不是「这个 agent 从不出错」。

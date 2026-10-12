@@ -70,8 +70,13 @@ function tokenFields(tokens) {
 function statusFromMessage(d) {
   const finish = String(d?.finish || '').toLowerCase();
   const err = d?.error;
-  const aborted = ['abort', 'aborted', 'cancel', 'canceled', 'cancelled'].some(x => finish.includes(x));
-  const failed = !!err || ['error', 'failed', 'failure'].some(x => finish.includes(x));
+  // ⚠️ 打断有两种写法：新版 opencode/kilo 记在 `finish`（abort/cancel 字样），而 CodeArts Doer 那族
+  //   把中断写成 `error.name = "MessageAbortedError"` 且 finish 为 null（本机 250 条 error 里 207 条是这种）。
+  //   只认 finish 的话，「用户按了停止」会被染成 error 红 —— 与下面「用户主动打断仍只标 aborted」那条口径相反。
+  const errName = String((err && err.name) || err || '').toLowerCase();
+  const ABORT_WORDS = ['abort', 'aborted', 'cancel', 'canceled', 'cancelled'];
+  const aborted = ABORT_WORDS.some(x => finish.includes(x) || errName.includes(x));
+  const failed = !!err ? !aborted : ['error', 'failed', 'failure'].some(x => finish.includes(x));
   return { failed, aborted, finish };
 }
 
@@ -350,10 +355,16 @@ function scanOpencodeLike(agent, dbPath, fam) {
   try {
     db = new mod.DatabaseSync(dbPath, { readOnly: true });
     const qAll = (sql) => { try { return db.prepare(sql).all(); } catch { return null; } };
-    const sessions = qAll('SELECT id, project_id, parent_id, directory, path, title, agent, model, time_created, time_updated FROM session ORDER BY time_created, id');
+    // ⚠️ 用 `SELECT *` 而不是列名单：这一族各家共享，但**列集合会随世代漂**——
+    //   新版 opencode/kilo 的 session 有 path/agent/model/cost/tokens_*，而 CodeArts Doer（同一族的 fork，
+    //   见 parsers/codeartsdb.mjs）的 session 没有那几列。写死列名会让整条查询失败（no such column: path）
+    //   → 该家恒 0 条。下面按属性取值，多出来的列不读、少掉的列自动为 undefined。
+    const sessions = qAll('SELECT * FROM session ORDER BY time_created, id');
     if (!sessions) throw new Error('读不到 session 表（schema 不兼容或库被锁定）');
-    const messages = qAll('SELECT id, session_id, time_created, time_updated, data FROM message ORDER BY session_id, time_created, id') || [];
-    const parts = qAll('SELECT id, message_id, session_id, time_created, time_updated, data FROM part ORDER BY session_id, time_created, id') || [];
+    // 同 session 那句：列名写死会在 fork 的旧世代库上整条失败，而这里失败是**静默**的（`|| []`），
+    // 病征是「条目都在、但工具数与 ttft 全 0」—— 比报错更难查。一律 SELECT *。
+    const messages = qAll('SELECT * FROM message ORDER BY session_id, time_created, id') || [];
+    const parts = qAll('SELECT * FROM part ORDER BY session_id, time_created, id') || [];
     const sessionById = new Map(sessions.map(s => [s.id, s]));
     const partsByMsg = new Map();
     for (const row of parts) {

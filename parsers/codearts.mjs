@@ -70,7 +70,11 @@ export function scanCodearts(agent, root, onlyFile) { // onlyFile 见 scanClaude
         } else if (line.includes('【AgentCore updated tokens】') && cur) {
           const tm = line.match(CA_TOKENS);
           if (tm) {
-            const tin = +tm[1], tout = +tm[2], tcache = +tm[4] + +tm[5];
+            // ⚠️ reasoning（第 3 组）折进 tout —— 与 opencode 家族的 tokenFields 同一条口径。
+            // 之前这组被读出来又丢掉，tout 少算约 20%；而 codearts 现在优先从 Doer 的会话库取数
+            // （kind=codeartsdb，那份库里 tout 就是 output+reasoning），两条源不一致的话，
+            // 「库读不动回退日志」那一轮就会让同一行的 tout 凭空掉一截，看着像数据坏了。
+            const tin = +tm[1], tout = +tm[2] + +tm[3], tcache = +tm[4] + +tm[5];
             cur.tin += tin; cur.tout += tout; cur.tcache += tcache;
             cur.calls.push({ model: cur.models[0] || '', tin, tout, tcache, dur: ts && cur.lastTs ? Math.max(0, ts - cur.lastTs) : 0 });
           }

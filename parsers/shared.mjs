@@ -229,7 +229,12 @@ export const OFF_KINDS = new Set(['jsonl', 'claude', 'buddyjsonl', 'codearts', '
 //             ④ compacts 可以给（pi 的 compaction 行有 tokensBefore，够页面那一列），但 **不给 rdur**：
 //                durationMs 只覆盖模型调用、不含工具执行，当「实际工作时间」用会把工具时间一起剥掉
 //                （页面 tooltip 明写「已剥掉挂机/隔夜」）。逐次耗时走详情 calls[].dur。
-export const PARSER_REV = { jsonl: 2, buddyjsonl: 5, claude: 14, kimi: 4, codex: 3, copilot: 1, codearts: 2, tracecode: 4, tracework: 4, doubao: 8, minimax: 2, 'generic-jsonl': 1, openclaw: 1, mimocode: 1, kilo: 1, comate: 2, cline: 1, buddyext: 1, pi: 1 };
+// codearts:3 —— tout 补上 reasoning。日志里 `【AgentCore updated tokens】` 那行的第 3 组一直是
+//             「正则抓到却没人用」，所以旧 index 里这一行的 tout 少约 20%（本机实测 Doer 库：
+//             Σreasoning/Σoutput ≈ 20.8%）。不 bump 的话老条目带着旧 tout 不动、只有重扫才更新，
+//             而这一行现在还要与 Doer 库（kind=codeartsdb，tout=output+reasoning）互换供数 ——
+//             两边口径不齐时，「库读不动退回日志」会看着像 tout 凭空掉了一截。
+export const PARSER_REV = { jsonl: 2, buddyjsonl: 5, claude: 14, kimi: 4, codex: 3, copilot: 1, codearts: 3, tracecode: 4, tracework: 4, doubao: 8, minimax: 2, 'generic-jsonl': 1, openclaw: 1, mimocode: 1, kilo: 1, comate: 2, cline: 1, buddyext: 1, pi: 1, codeartsdb: 1 };
 
 // index 落盘由主文件负责（IO 与调度都在那边）；解析器只报「哪个 kind 脏了」。
 // 主文件启动时调 setSaveHook 把落盘登记函数注入进来 —— 避免反向 import 主文件。

@@ -11,6 +11,7 @@ import { hasMavisSession } from './minimax.mjs';
 import { OPENCLAW_STATE_DIRNAMES, openclawTranscripts } from './openclaw.mjs';
 import { clineTranscripts } from './cline.mjs';
 import { piTranscripts } from './pi.mjs';
+import { CODEARTS_DOER_ONLY_TABLES, codeartsDoerDbFile } from './codeartsdb.mjs';
 import { buddyExtRoot, buddyExtWhyMissing } from './buddyext.mjs';
 // hasCursorTranscripts 里枚举转录走的是 cursor 解析器那一个函数（两种落法共用一套判定，见该函数注释）。
 // ⚠️ 这条 import 曾经漏掉过：函数体在外层 try{}catch{} 里，ReferenceError 被静默吞掉 →
@@ -785,6 +786,10 @@ export function opencodeDbVerify(fp) {
     // 不挡的话，用户把 kilo.db 手工填给 opencode（或把 ~/.local/share 整个填进来）就会被这里接走，
     // 且 server 的自愈逻辑还会把 kilo 的 kind 改写成 opencode。判据见 KILO_ONLY_TABLES。
     if (KILO_ONLY_TABLES.some(t => names.has(t))) return false;
+    // ⚠️ CodeArts Doer 同理，而且更险：它那库**文件名字面就叫 opencode.db**（~/.codeartsdoer/codearts-data/），
+    // 五张表也全为真。不挡的话用户把 ~/.codeartsdoer 手工填给 opencode、或整层 home 填进来，就会被这里接走，
+    // 侧栏于是多出一条假的「opencode 会话」。判据见 CODEARTS_DOER_ONLY_TABLES。
+    if (CODEARTS_DOER_ONLY_TABLES.some(t => names.has(t))) return false;
     return true;
   } catch { return false; }
   finally { try { db && db.close(); } catch {} }
@@ -1104,6 +1109,11 @@ export function hasComateSessions(storeDir) {
 }
 
 export function sniffBase(base) {
+  // CodeArts Doer 的库排在 kilo / opencode **之前**：它文件名字面就叫 opencode.db，五张共享表也全为真，
+  // 排在后面就会被 opencodeDbFile 接走（虽然那边也加了反向排除，两边都挡才算住 —— 与 kilo 同源的做法）。
+  // 判据 = 三张核心表齐 **且** 命中 cag_* / digital_avatars 这几张 Doer 独有表（见 parsers/codeartsdb.mjs）。
+  const cadb = codeartsDoerDbFile(base);
+  if (cadb) return { kind: 'codeartsdb', sessions: cadb, traces: null };
   // kilo 必须排在 opencode **之前**：kilo.db 与 opencode.db 是同源 schema，kilo.db 在 opencodeDbVerify
   // 下五张表全为真（本机实测），排在后面就永远轮不到它 → kilo 恒 0 条。两家靠独有表互斥
   // （opencodeDbVerify 也反向排除了 KILO_ONLY_TABLES），判据见各自 verify 的注释。

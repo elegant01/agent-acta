@@ -56,6 +56,9 @@ import { scanKimi, kimiEntryContent } from '../parsers/kimi.mjs';
 import { scanComate, comateEntryContent } from '../parsers/comate.mjs';
 import { scanDsh, DSH_ZSTD_OK } from '../parsers/dsh.mjs';
 import { scanCodearts } from '../parsers/codearts.mjs';
+// CodeArts 的第二份落盘：Doer 宿主的 opencode.db（kind=codeartsdb）。条目仍归 codearts 一行，
+// 归属规则是「库优先、日志回退」—— 两份是同一批调用的不同序列化，分开数就是把会话数两遍。
+import { scanCodeartsDoerDb, codeartsDbEntryContent, codeartsDbScanErr, codeartsDbSummary, codeartsDoerDbFile, codeartsDoerRoots } from '../parsers/codeartsdb.mjs';
 import { scanGemini } from '../parsers/gemini.mjs';
 import { scanCursor, cursorTranscriptFiles, CURSOR_NO_USAGE_NOTE, CURSOR_MODEL_NOTE, CURSOR_HOOK_NOTE } from '../parsers/cursor.mjs';
 import { scanZcode, zcodeScanErr } from '../parsers/zcode.mjs';
@@ -881,6 +884,14 @@ function diagnose() {
         row.note += '（含 genie 扩展 ' + bx + ' 条）';
         if (buddyExtScanErr.get(name)) row.note += '（genie 扩展那半最近一次读不动：' + buddyExtScanErr.get(name) + '，下一轮自动重来）';
       }
+      // codearts 名下两份落盘是**择一**供数（Doer 库 or 插件日志），所以这一行必须说得出用的是哪一份：
+      // 条目数从 20 跳到几千（换成库）、或从几千掉回 20（库读不动退回日志），不讲清就都像解析器坏了。
+      if (row.kind === 'codearts') {
+        const s = codeartsDbSummary(name);
+        row.note = (row.note ? row.note + ' ' : '') + (codeartsSrcOf.get(name) === 'db'
+          ? '（现取 Doer 会话库：' + s.sess + ' 个会话 / ' + s.turns + ' 轮，插件日志只当回退）'
+          : '（Doer 会话库未用' + (codeartsDbScanErr.get(name) ? '：' + codeartsDbScanErr.get(name) : '：未探到库文件') + '，现取插件日志，窗口只有它的留存期那么长）');
+      }
     }
     // 「两个 agent 指向同一个根」在这种重复被拦住之前就可能已经落进配置里了。它不会多出一份数据，
     // 只会让两边的条数随扫描先后互相抢（条目 id 不含 agent 名）—— 抢输的那行看着像坏了。
@@ -1532,6 +1543,8 @@ function scanBranch(conf) {
   switch (conf.kind) {
     case 'trace': return { kind: 'trace', list: conf.traces };
     case 'codearts': return { kind: 'codearts', list: conf.sessions };
+    // codeartsdb：Doer 的会话库（sessions 存的是那份 opencode.db 的路径，与 traedb / zcode 同款文件型）
+    case 'codeartsdb': return { kind: 'codeartsdb', list: conf.sessions };
     case 'claude': return { kind: 'claude', list: conf.sessions };
     // doubao（豆包 Work 智能体）：list = .sessions 根，解析器内部枚举 <会话>/agents/<agent>/system/trajectory.jsonl
     case 'doubao': return { kind: 'doubao', list: conf.sessions };
@@ -1602,6 +1615,44 @@ function scanBuddyExtExtras(agent, conf) {
   for (const r of (conf.sessionsExtra || []).filter(x => x && x !== conf.sessions)) scanBuddyExt(agent, r, null);
 }
 
+// CodeArts 名下有两份落盘，择优取一份扫（同一个 agent 行，不另起 agent）。
+//   Doer 宿主的会话库 = 全量历史（本机 637 会话、跨半年），插件那边的文本日志只留约 30 天。
+// 为什么是「二选一」而不是「两边都扫再去重」：实测日志侧 20 条轮的 sessionID 与轮时间 **20/20** 都能在库里
+// 对上（同一批调用的两种序列化），而库里另有 617 个会话日志里根本没有 ⇒ 两边一起扫就是把同一批会话数两遍，
+// 去重只能按会话退回到「整条取库」。取舍与 traedb 优先 / renderer.log 回退 同源。
+// ⚠️ 只有库**真的读不动**才回退日志：空库算读到 —— 否则哪天库被清空，侧栏会静默退回 30 天窗口，
+//    看着像「CodeArts 少了一大块」而没人说原因。回退时诊断 note 会写清是哪一份在供数。
+// 这一行现在到底吃哪一份，由扫描编排**当场记**（不能事后从 files 推：库被挪走后那份记录还在，
+// 会指着日志供的数说「现取 Doer 会话库」—— 测试就是这么抓出来的）。
+const codeartsSrcOf = new Map();   // agent → 'db' | 'log'
+
+function scanCodeartsAgent(agent, conf, onlyFile) {
+  const db = codeartsDoerDbFind();
+  if (db) {
+    const r = scanCodeartsDoerDb(agent, db);
+    if (r === 'ok' || r === 'empty') { codeartsSrcOf.set(agent, 'db'); purgeCodeartsOtherSide(agent, 'codeartsdb'); return; }
+  }
+  codeartsSrcOf.set(agent, 'log');
+  scanCodearts(agent, conf.sessions, onlyFile);
+  purgeCodeartsOtherSide(agent, 'codearts');
+}
+
+function codeartsDoerDbFind() {
+  for (const root of codeartsDoerRoots(HOME)) { const fp = codeartsDoerDbFile(root); if (fp) return fp; }
+  return null;
+}
+
+function purgeCodeartsOtherSide(agent, keepKind) {
+  for (const [id, e] of entries) {
+    if (e.agent !== agent) continue;
+    const k = srcs.get(id)?.kind;
+    if ((k === 'codearts' || k === 'codeartsdb') && k !== keepKind) {
+      entries.delete(id); srcs.delete(id); removedIds.push(id);
+    }
+  }
+  sorted.cache = null;
+}
+
 function scanTraeAgent(agent, conf, onlyFile) {
   const r = scanTraeDb(agent, conf.sessions, conf.traeKey);
   if (r === 'ok' || r === 'empty') { purgeTraeOtherSide(agent, 'traedb'); return; }
@@ -1619,7 +1670,9 @@ function scanOneAgent(agent, conf, onlyFile) {
     const b = scanBranch(conf);
     if (!b.list) return;
     if (b.kind === 'trace') scanTraces(agent, b.list);
-    else if (b.kind === 'codearts') scanCodearts(agent, b.list, onlyFile);
+    else if (b.kind === 'codearts') scanCodeartsAgent(agent, conf, onlyFile);
+    // 用户把这个库单独加成一行时也照常扫（kind 走 codeartsdb，条目 id 前缀 cadb# 与 opencode/kilo 错开）
+    else if (b.kind === 'codeartsdb') scanCodeartsDoerDb(agent, b.list);
     else if (b.kind === 'claude') scanClaude(agent, b.list, onlyFile);
     // doubao（豆包 Work 智能体）：trajectory.jsonl 逐行 off 增量，轮时间与 assignment.md 对齐
     else if (b.kind === 'doubao') scanDoubao(agent, b.list, onlyFile);
@@ -1986,6 +2039,8 @@ function entryContent(id, full) {
     if (src.kind === 'opencode') return opencodeEntryContent(src, full);
     // kilo：与 opencode 同一条路（复用同一份核心，只按 kilo 的 id 前缀 / 详情版本号取内存 turns）
     if (src.kind === 'kilo') return kiloEntryContent(src, full);
+    // codeartsdb：Doer 的库走的是 opencode 家族共享核心，详情同样直接读内存 turns
+    if (src.kind === 'codeartsdb') return codeartsDbEntryContent(src, full);
     // hermes：同 opencode（DB 主源 + agent.log 逐次行都在扫描时并进了内存 turns）
     if (src.kind === 'hermes') return hermesEntryContent(src, full);
     // devindb：同 opencode/hermes（整轮解析都在扫描时做完，直接读内存 turns）
@@ -2883,7 +2938,7 @@ function sessionsAgg(agentFilter, projectFilter, range, from, to, limit, work) {
 // noFlag 那几家是查过代码才归进来的：codex 的 error 建好后从不赋值（codex.mjs:172）、
 //   tracecode/tracework 源里明写「工具返回不落地」（tracecode.mjs:335）、generic 的 rules 没有 result 规则。
 const TOOL_FAIL_TIERS = {
-  signal: new Set(['claude', 'jsonl', 'dsh', 'zcode', 'traedb', 'opencode', 'kilo', 'hermes', 'devindb', 'gemini',
+  signal: new Set(['claude', 'jsonl', 'dsh', 'zcode', 'traedb', 'opencode', 'kilo', 'codeartsdb', 'hermes', 'devindb', 'gemini',
     'kimi', 'buddyjsonl', 'doubao', 'minimax', 'copilot', 'trace', 'atomcode', 'openclaw', 'cline', 'buddyext', 'pi']),
   noDetail: new Set(['cursor', 'codearts']),
   noFlag: new Set(['codex', 'tracecode', 'tracework', 'generic-jsonl']),
