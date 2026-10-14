@@ -15,7 +15,7 @@ AACTA.DialogAddAgent = {
       <el-form-item label="Agent 名称">
         <el-input v-model="addForm.name" placeholder="如 claude、trae、cursor…" @keyup.enter="submitAdd"></el-input>
         <div class="form-tip">留空路径时按平台自动探测：~/.名称（全平台）、%APPDATA%（Win）、Application Support（mac）、~/.config（Linux/HarmonyOS）</div>
-        <div class="form-tip">已知 agent（claude / codex / cursor / trae / traework / qoder / opencode / kilo / gemini / copilot / windsurf / codearts / kimi / dsh / zcode / doubao / hermes / devin / minimax / mimocode / openclaw / comate / cline / pi / qwen / crush）服务启动时会自动发现，无需手动添加。</div>
+        <div class="form-tip">已知 agent（claude / codex / cursor / trae / traework / qoder / opencode / kilo / gemini / copilot / windsurf / codearts / kimi / dsh / zcode / doubao / hermes / devin / minimax / mimocode / openclaw / comate / cline / pi / qwen / crush / droid / goose / openhands）服务启动时会自动发现，无需手动添加。</div>
         <div class="form-tip">codebuddy 一家有三份落盘，<b>侧栏只有一行 codebuddy</b>：CLI 的 ~/.codebuddy/projects 与 genie 扩展（VSCode / JetBrains / CodeBuddy CN 应用共用）的 %LOCALAPPDATA%\CodeBuddyExtension\Data 都并到这一行；%APPDATA%\CodeBuddy CN 那个目录只有 IDE 缓存、没有会话正文。</div>
         <div class="form-tip">qwen / hunyuan / grok 目前<b>只有图标、没有解析器</b>：不会被自动发现，手动添加也会因识别不到日志结构而失败（R16 遗留）。</div>
       </el-form-item>

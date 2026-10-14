@@ -5,7 +5,7 @@ English | [中文](./README.md)
 A local request-log dashboard for AI agents: it aggregates the session logs that various AI agents write to disk, and shows per-turn/per-request latency, tokens, cache hits, context usage and tool-call detail in a browser.
 
 - A local long-running service + SSE live push — **no external dependencies, no network egress, purely read-only** (it injects nothing and never touches any agent's config)
-- One page for 27 agents: atomcode / codebuddy / workbuddy / claude / codex / cursor / trae / qoder / opencode / gemini / copilot / windsurf / codearts / kimi / dsh / zcode / doubao / hermes / devin / minimax / mimocode / kilo / openclaw / cline / pi / qwen / crush
+- One page for 31 agents: atomcode / codebuddy / workbuddy / claude / codex / cursor / trae / qoder / opencode / gemini / copilot / windsurf / codearts / kimi / dsh / zcode / doubao / hermes / devin / minimax / mimocode / kilo / openclaw / comate / cline / pi / qwen / crush / droid / goose / openhands
 - Plus a floating desktop widget (a small Electron window): today/all-time tokens + the latest card stream
 
 Requirements: `node` on the machine (`node -v` works, `>=22.5`). **Windows is the primary verified platform**; the code paths for mac / Linux / HarmonyOS PC (per-platform candidate directories, self-healing after cross-platform moves, POSIX permissions) are in place and pinned by regression tests, but have not been run end-to-end on real machines — before switching platforms, read the "Cross-platform" section of [REFERENCE.md](REFERENCE.md), which lists where the platforms differ and the two or three things you must handle by hand.

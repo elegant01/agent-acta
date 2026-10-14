@@ -76,6 +76,9 @@ export const OFF_KINDS = new Set(['jsonl', 'claude', 'buddyjsonl', 'codearts', '
   // qwen（Qwen Code）：projects/<项目编码>/chats/<会话 id>.jsonl 逐行追加的消息流，
   // 逐行 off 续读语义与 claude / pi 一致（usageMetadata 在每条 assistant 行内）。
   'qwen',
+  // droid（Factory Droid CLI）：~/.factory/sessions/<cwd 转义>/<会话 id>.jsonl 是追加式会话转录，
+  // 逐行 off 续读语义与 pi / openclaw 一致 —— 但**行内没有 usage**，逐轮 token 走不通（口径见 parsers/droid.mjs）。
+  'droid',
   // generic-jsonl（R18）：声明式接入的 claude 同族逐行 jsonl，逐行 off 续读语义与 claude 完全一致。
   // 它的「**rules** 口径」版本不按 kind 走、按 **agent 走**（同一 kind 下每个 agent 的 rules 可以
   // 各不相同），版本号 rulesRev / 指纹 rulesHash 随 config 一起落盘，由主文件在 loadIndex 恢复时
@@ -254,7 +257,50 @@ export const OFF_KINDS = new Set(['jsonl', 'claude', 'buddyjsonl', 'codearts', '
 //             不拿会话快照冒充某一轮、也不按轮摊累计 cost。另两条：时间列是 **unix 秒**（入库 ×1000，
 //             工具耗时在 metadata 的 start_time/end_time 里才是毫秒）；同一秒的 user/assistant
 //             **必须按 rowid 稳定序**（拿 uuid 当次级键会把回复排到提问前面 → 那一轮 0 次调用）。
-export const PARSER_REV = { jsonl: 2, buddyjsonl: 5, claude: 14, kimi: 4, codex: 3, copilot: 1, codearts: 3, tracecode: 4, tracework: 4, doubao: 8, minimax: 2, 'generic-jsonl': 1, openclaw: 1, mimocode: 1, kilo: 1, comate: 2, cline: 1, buddyext: 1, pi: 1, codeartsdb: 1, qwen: 1, crush: 1 };
+// droid:1 —— 首次接入（2026-10-14）。一上来就钉死、以后动必须 +1 的四条（真件实测，见 parsers/droid.mjs 头）：
+//             ① 开轮 = `role:"user"` **且没有 `visibility` 字段** 且 content 有非空 text 块。droid 会把
+//                自己的告警（visibility:"both"）和一组 `<system-reminder>`（visibility:"llm_only"，实测一轮 6 条）
+//                写成 role:"user" 行；工具返回同样挂 role:"user" 但没有 text 块 —— 三条判据缺一就虚增轮数；
+//             ② **逐轮 token 源头不可得**：assistant 行没有任何 usage 字段，用量只在隔壁 `.settings.json`，
+//                且那里也只有 `tokenUsage`（会话累计）与 `lastCallTokenUsage`（末次调用、每轮覆写）——
+//                ⇒ 每轮 tin/tout/tcache/total/ctx/ctxUsed 一律如实 0（crush / doubao 那一档），累计只进详情 note；
+//             ③ 失败信号只认 tool_result 块的 `is_error === true`，且**只逐项**（Anthropic 形状，写进详情
+//                tools[].error）—— 真件里一轮有两条 is_error:true 的试错后面跟着成功回复，拿它染红整轮就是
+//                假警报（同 crush / devindb 的取舍）；`agent_turn_outcome.reason` 本机只见过 "completed"，
+//                值域未明 ⇒ status 一律 ok、aborted 一律 false，不拿没摸清的值域推轮状态；
+//             ④ 轮时间取行级 `timestamp`（**ISO 字符串**，不是毫秒数）；会话工作时长取
+//                `.settings.json.assistantActiveTimeMs`；`.settings.json` 是**整份重写并留同名 .bak** ⇒
+//                枚举只认 `*.jsonl`，写成 `*.json*` 会把 .bak 当第二份会话、条数直接翻倍。
+// goose:1 —— 首次接入（2026-10-14，SQLite 型 kind，**不进 OFF_KINDS**：整份重读 + {mtime,size} 签名跳过，
+//             这条编号管的是搜索分片作废）。一上来钉死、以后动必须 +1 的四条（真件实测，见 parsers/goose.mjs 头）：
+//             ① 开轮 = `role:"user"` 且 `metadata.userVisible !== false` 且有非空 text 块 —— goose 的
+//                `<turn-context>` 注入行（userVisible:false + turnContext:true）与**工具返回行**都挂 role:"user"，
+//                少挡一条就虚增轮数（与 droid 的 visibility 同型）；
+//             ② 命名是**反向陷阱**：`sessions.input_tokens/output_tokens/total_tokens/cache_read_tokens` 实测是
+//                **最后一次请求的快照**（会话 20261014_4：6762/253/5632 恰等于 usage_ledger 末行），
+//                带前缀的 `sessions.accumulated_*` 才是会话累计（accumulated_input 76638 = Σ usage_ledger，三源自证一致）；
+//             ③ **`inputTokens` 含缓存**（自证：`total = input + output` 恒等、cacheRead 单列且 ≤ input，
+//                本机 13 次调用全部成立）⇒ `tin = input − cacheRead`、`tcache = cacheRead`、`ctxUsed = input`；
+//                逐次用量在 assistant 行的 `metadata_json.usage`，`elapsedMs` / `timeToFirstTokenMs` 现成（TTFT 有源）；
+//             ④ `created_timestamp` 是 **unix 秒** ⇒ 入库 ×1000；工具块叫 `toolRequest`（挂 assistant 行）/
+//                `toolResponse`（挂 user 行）、配对键是块上的 `id`，**不是** Anthropic 的 tool_use/tool_result。
+// openhands:1 —— 首次接入（2026-10-14，**不进 OFF_KINDS**：一事件一文件、会话签名比「事件数+总字节+base_state 指纹」，
+//             这条编号管的是搜索分片作废）。一上来钉死、以后动必须 +1 的四条（真件实测，见 parsers/openhands.mjs 头）：
+//             ① 开轮 = `kind:"MessageEvent"` 且 `source:"user"` 且 llm_message 有非空 text ——
+//                这一家**没有** droid/goose 那种注入行（真件里 4 条 user 全是真人打的，其中一条带 extended_content
+//                与 activated_skills 也仍是真人句），所以判据只有这一条，别顺手加「过滤 system」那种动作；
+//             ② **逐轮 token 源头不可得**：事件对象里没有任何 usage 字段，用量只在 `base_state.json` 的
+//                `stats.usage_to_metrics.<来源>.accumulated_token_usage`（会话累计）⇒ 每轮 tin/tout/tcache/total 如实 0，
+//                累计与 `accumulated_cost` 只进详情 note；`per_turn_token` 语义未明 ⇒ 只照抄不进桶；
+//                ⚠️ 但 **ctx 分母白送**（同一个对象里的 `context_window`，本机 922000）⇒ entry.ctx 照实填，
+//                分子没有 ⇒ ctxUsed 留 0，不拿 per_turn_token 冒充；
+//             ③ `calls` = 该轮内**去重后的 `llm_response_id`** 数（一次响应可产多个 ActionEvent，数事件会翻倍），
+//                `tools` = ActionEvent 条数；
+//             ④ `timestamp` 是**不带时区的本地时间** ⇒ 按本地解析（全站按毫秒 epoch），别当 UTC 差一个时区；
+//                失败只逐项认 `observation.is_error`（详情 tools[].error + exit_code），不染红整轮，
+//                `security_risk` 不是失败信号。⚠️ 凭证红线：`base_state.json` 里嵌 `agent.llm.api_key` 明文，
+//                解析器只点取白名单字段（stats/workspace/execution_status/model），整份 state 永不外递。
+export const PARSER_REV = { jsonl: 2, buddyjsonl: 5, claude: 14, kimi: 4, codex: 3, copilot: 1, codearts: 3, tracecode: 4, tracework: 4, doubao: 8, minimax: 2, 'generic-jsonl': 1, openclaw: 1, mimocode: 1, kilo: 1, comate: 2, cline: 1, buddyext: 1, pi: 1, codeartsdb: 1, qwen: 1, crush: 1, droid: 1, goose: 1, openhands: 1 };
 
 // index 落盘由主文件负责（IO 与调度都在那边）；解析器只报「哪个 kind 脏了」。
 // 主文件启动时调 setSaveHook 把落盘登记函数注入进来 —— 避免反向 import 主文件。

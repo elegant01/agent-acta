@@ -26,6 +26,9 @@
 | copilot（GitHub Copilot CLI） | `~/.copilot/session-state/<sessionId>/events.jsonl`；同根 `session-store.db` + WAL | 每行一个结构化事件：`session.start` / `user.message` / `assistant.message` / `assistant.turn_end`；用量库为 `assistant_usage_events` | 轮（`turnId` 分组） | ✅ 事件时间戳；SQLite 用量表补逐次 duration/TTFT | ✅ `assistant_usage_events` 的 input/output/cache/reasoning；库不可读时正文仍可显示 |
 | cline（Cline CLI 3.x） | `<data>/sessions/<会话 id>/<会话 id>.messages.json`（data 根默认 `~/.cline/data`；`CLINE_DATA_DIR` / `CLINE_SESSION_DATA_DIR` 可改写） | **整份 JSON 文档**（`{version, updated_at, agent, sessionId, messages[], system_prompt}`，会话进行中每次落盘**整体重写**，不是 JSONL） | 轮（`role=user` **且** content 里有非空 `text` 块才开轮 —— ⚠️ `tool_result` 也是 `role:user`） | ✅ 轮内末条 `ts` − 轮首 `ts`（逐次调用耗时不落盘，`calls[].dur` 恒 0；逐工具耗时能算） | ✅ assistant 消息的 `metrics`（⚠️ **`inputTokens` 含缓存** ⇒ `tin = input−cacheRead−cacheWrite`、`tcache` = 两个 cache 桶，与 openclaw 相反）；`ctx` 恒 0（模型目录只嵌在二进制里）；失败只有 `tool_result.content[]` 的**逐项** `success`/`error` |
 | buddyext（CodeBuddy 的 **genie 扩展** —— 与上一行同一个 `codebuddy` agent，挂在它的 `sessionsExtra` 上；VSCode / CodeBuddyIDE / JetBrains 与 CodeBuddy CN 应用共用） | `%LOCALAPPDATA%\CodeBuddyExtension\Data\<acct>\<Host>/(<acct>/)?history\<wsKey>\<会话 id>\`（`<Host>` ∈ VSCode / CodeBuddyIDE / JetBrains；`<acct>` = `default` 或 36 位 uuid，**uuid 时同一串再重复一层**） | **每个会话一份 `index.json`**（`{messages[], requests[]}`，会话进行中**整份重写**）+ `messages/<消息 id>.json` **一条一个文件**（`{role, message(JSON 字符串), extra(JSON 字符串), createdAt?}`）；同级还有工作区级 `index.json` 供会话名 | 轮（**轮 = `requests[]` 的一项**，产品自己记的，不靠 role 猜） | ✅ `request.startedAt` → 该轮最晚消息时间戳。消息时间戳三取：`createdAt`(ISO) → `extra.responseId` 前 14 位（**本地时间**）→ `gen-<epoch 秒>`；⚠️ **绝不用文件 mtime** —— 整份重写会把一批消息文件的 mtime 拍平到同一瞬间（实测 mtime 差 2ms 而内容差 84s） | ✅ `request.usage`（⚠️ **`inputTokens` 含缓存**，与 cline 同、与 openclaw 相反 ⇒ `tin = input−cacheTokens−cachedWriteTokens`、`total = totalTokens = Σ 各步`）；`ctxUsed = lastTokens`；逐次 token+耗时取新版每条 assistant 的 `extra.statsSnapshot`（老方言没有 ⇒ `calls[].tin` 留 null 不印假 0）；`ctx` 恒 0；失败 = `tool-result` 的 `result.status==='error'`（`cancelled` 记中断、`skipped` 两头都不记） |
+| droid（Factory Droid CLI） | `<home>/.factory/sessions/<cwd 转义>/<会话 id>.jsonl`（`FACTORY_HOME_OVERRIDE` / `FACTORY_PROFILE_DIR` 可整棵挪走 ⇒ index 里存的是**会话根**；`~/.factory/logs\|state\|droids\|prem-auth\|cache` 那些兄弟目录都不是会话源） | 追加式逐行 JSON：首行 `session_start`（`id/title/owner/version/cwd/hostId`）→ `message`（Anthropic 形状：assistant 的 `content[]` 里是 `thinking`/`text`/`tool_use`，**工具返回挂 `role:"user"` 的 `tool_result` 块**）→ 每轮末一条 `agent_turn_outcome`（只有 `turnId/reason/resultKind`）。同名 `.settings.json` 是会话账本（**整份重写 + 留 `.bak`**） | 轮（`role:"user"` **且没有 `visibility` 字段** 且有非空 `text` 块 —— ⚠️ droid 把自己的告警写成 `visibility:"both"`、把 `<system-reminder>` 群写成 `visibility:"llm_only"`，两者都是 `role:"user"`；`tool_result` 行也没有 `visibility`，靠「有 text 块」挡住） | ✅ 行级 `timestamp`（**ISO 字符串**，不是毫秒数）；轮级 = 下一轮时间差（末轮 0），会话工作时长取 `.settings.json.assistantActiveTimeMs` | ⚠️ **逐轮 token 源头不可得** ⇒ 每轮 `tin/tout/tcache/total/ctx/ctxUsed` 如实 0（crush / doubao 那一档）。源里只有 `.settings.json` 的 `tokenUsage`（会话累计，含 `factoryCredits`）与 `lastCallTokenUsage`（**末次调用快照、每轮被覆写**）⇒ 两个数只在详情 callsNote 里如实给，不摊到轮上；`models` 取 assistant 的 `modelId`（custom 模型形如 `custom:<displayName  slug 化>-0`）；失败 = `tool_result.is_error` **只逐项**（真件里一轮两条试错后接成功回复，染红整轮就是假警报），轮级 `status` 一律 ok、`aborted` 一律 false（`agent_turn_outcome.reason` 值域未明，不猜）；`ctx` 恒 0（源里没有窗口容量）。⚠️ 枚举只认 `*.jsonl`，写成 `*.json*` 会把 `.settings.json.bak` 当第二份会话、条数翻倍 |
+| goose（Block Goose） | `<root>/data/sessions/sessions.db`（**文件型 kind，index 里存的是 db 路径**；Windows 真路径 = `%APPDATA%\Block\goose`，POSIX 才是 `~/.local/share/goose` —— 第三方落盘表在 Windows 上给的那条本机实测不存在；`GOOSE_PATH_ROOT` 可整棵挪走，`goose info` 会把它自己算出的三条路径打出来） | SQLite（**WAL**）：`sessions` / `messages` / `usage_ledger` / `schema_version` / `provider_inventory_*`。判据必须带**列**（`messages.content_json` + `metadata_json` + `session_id`）—— 别家的表也叫 `messages`（opencode / kilo / crush 全姓这个） | 轮（`role=user` **且 `metadata.userVisible!==false`** 且有非空 text 块 —— ⚠️ `<turn-context>` 注入行是 `userVisible:false`+`turnContext:true`，**工具返回也挂 `role:user`**（块是 `toolResponse`、没有 text）） | ✅ 逐次 `usage.elapsedMs` 与 `timeToFirstTokenMs` 都在（TTFT 有源，qwen 那一档）；轮级 = 下一轮时间差（末轮取本轮 elapsedMs） | ✅ assistant 行的 `metadata_json.usage`（⚠️ **`inputTokens` 含缓存**，与 qwen/cline/buddyext 同侧 ⇒ `tin = input − cacheRead`、`tcache = cacheRead`、`ctxUsed = input`；`cacheReadTokens` 是**缺键**不是 0）；`ctx` 分母 = `sessions.model_config_json.max_tokens`（本机 128000，不用查表）；⚠️ **命名反向陷阱**：`sessions.input_tokens` 那组裸名列实测是**最后一次请求的快照**，带前缀的 `sessions.accumulated_*` 才是会话累计（对账：accumulated_input 76638 == Σ usage_ledger.input_tokens == Σ assistant 行 inputTokens，三源一字不差）；工具块叫 `toolRequest`（挂 assistant 行）/ `toolResponse`（挂 user 行）、配对键是块上的 `id`；压缩走 `usage_ledger.is_compaction`；`messages.tokens` 那一列本机恒 null，别读 |
+| openhands（OpenHands V1） | `<home>/.openhands/conversations/<会话 uuid>/`（会话根**没有环境变量入口**，包里只翻到 `OPENHANDS_SUPPRESS_BANNER/PROJECT_DIR/SESSION_ID` 这些） | ⚠️ **一事件一文件**：`events/event-<NNNNN>-<uuid>.json`（`NNNNN` 是全局递增序号，文件名排序即事件顺序），kind ∈ `SystemPromptEvent` / `MessageEvent` / `ActionEvent` / `ObservationEvent`；同目录 `base_state.json` 是会话账本。**`base_state.json` 里嵌 `agent.llm.api_key` 明文**（`~/.openhands/agent_settings.json` 整份也是密钥与网关）⇒ 解析器只点取白名单字段（`stats` / `workspace` / `execution_status` / `agent.llm.model`），整份 state 永不外递、不进详情、不进搜索分片 | 轮（`kind:"MessageEvent"` 且 `source==="user"` 且有非空 text —— 这一家**没有注入行**：真件 4 条 user 全是真人打的，带 `extended_content`+`activated_skills` 的那条也算；工具返回不挂 user，它在 `ObservationEvent` 里 `source:"environment"`） | ✅ 行级 `timestamp` 是**不带时区的本地时间**（`2026-10-14T11:19:45.837188`）⇒ 按本地解析，别当 UTC；轮级 = 下一轮时间差（末轮取本轮末事件时间） | ⚠️ **逐轮 token 源头不可得**：事件对象里没有任何 usage 字段 ⇒ 每轮 tin/tout/tcache/total 如实 0（droid 那一档）。账本在 `base_state.stats.usage_to_metrics.<来源>`：`accumulated_token_usage{prompt,completion,cache_read,cache_write,reasoning,**context_window**,per_turn_token}` + `accumulated_cost`（本机 122188/3001、cost 0.010528）⇒ 只进 note 不摊轮；`per_turn_token` 语义未明 ⇒ 照抄不参与计算。**唯一的白送是 ctx 分母**：`context_window`（本机 922000）照实填 `entry.ctx`，分子没有 ⇒ `ctxUsed` 留 0；`calls` = 该轮去重后的 `llm_response_id` 数（并行工具调用共享一个 id，数事件会翻倍）、`tools` = ActionEvent 条数；失败 = `observation.is_error` **逐项**（另带 `exit_code`），`security_risk` 不是失败信号 |
 | trace（其它走 span 的 agent） | `<base>/sessions` + `<base>/traces` | span 模型 | 每次 Agent workflow | ✅ 现成 duration | ✅ modelInfo 汇总 |
 | zcode（ZCode CLI） | `~/.zcode/cli/db/db.sqlite`（WAL 模式的 SQLite 库，**不是文件树**） | `session` / `message`(data JSON) / `part`(data JSON) / `session_input` / `tool_usage` / `model_usage` / `turn_usage` 七张表 | 轮（role=user 的 message 开轮，与 `turn_usage.user_message_id` 天然对齐） | ✅ `turn_usage` / `model_usage` / `tool_usage` 的真实起止时间（含 TTFT=`first_token_at−started_at`） | ✅ `turn_usage` 轮级账（缺行回退 `model_usage` 求和）；上下文占用 = 最后一次调用的 input+cache |
 | opencode（OpenCode CLI/桌面） | `~/.local/share/opencode/opencode.db`（**明文** SQLite + WAL，不需要密钥/解密） | `session` / `message`(data JSON) / `part`(data JSON) + `event`·`event_sequence`（事件投影，不作第二数据源） | 轮（role=user 的 message 开轮；其后每条 assistant message = 一次 LLM 调用） | ✅ 消息 `time.created/completed` 差值；工具取 `state.time.{start,end}` | ✅ 每条 assistant message 的 `tokens`（input/output/reasoning/cache）逐次求和；上下文占用 = 最后一次调用的 input+cache |
@@ -737,6 +740,67 @@ claude 省事的地方 —— 取不到就是 0，页面退化成只显示占用
 > `dirTaken` 比的是路径字符串，所以「手工再指索引里的某一份库」不会被拒（同一批轮次会在侧栏出现两行）。
 > 真要防得让 `dirTaken` 认「被某个已注册索引包含」，那是服务端另一件事，不在解析器里偷偷做。
 
+## droid（Factory Droid CLI，2026-10-14 接入）
+
+> 包名是 **`droid`**（`Factory Droid CLI`），别装成 npm 上撞名的 `droid-cli`（那是安卓开发 CLI，接上永远 0 条）。
+> 真身是 293MB 的 bun 编译原生 exe（`@factory/cli-win32-x64` + `-baseline` 两份、合计 560MB），`bin/droid` 只是 1.3KB shim。
+
+**落盘位置**（本机真件核实）：`<home>/.factory/sessions/<cwd 转义>/<会话 id>.jsonl`，同级同名 `.settings.json` 是会话账本（另有 `.settings.json.bak`）。
+`<cwd 转义>` = 会话 cwd 把 `:` 与路径分隔符一律换成 `-`（实测 `F:\centos\agentLog\agent-acta` → `-F-centos-agentLog-agent-acta`，**可逆**，但项目名取首行 `header.cwd`、不靠它反解）。
+`FACTORY_HOME_OVERRIDE` / `FACTORY_PROFILE_DIR` 能把这棵树整个挪走，`candidateBases('droid')` 认这两个环境变量指哪儿认哪儿；别名 `factory` 负责把默认的 `~/.factory` 铺出来。
+
+**四条钉死的口径**（`PARSER_REV.droid` 守着，改任何一条必须 +1，逐条实测来源见 `parsers/droid.mjs` 头）：
+① 开轮只认「`role:"user"` + **无 `visibility`** + 有非空 `text` 块」；
+② **逐轮 token 源头不可得** ⇒ 每轮三桶与 total/ctx/ctxUsed 一律如实 0，会话累计与末次快照只进详情 note；
+③ `tool_result.is_error` **只逐项**标失败，不染红整轮；轮级 `status` 一律 ok、`aborted` 一律 false；
+④ 轮时间取行级 ISO `timestamp`、会话时长取 `assistantActiveTimeMs`（**别用文件 mtime**，账本整份重写会拍平），枚举只认 `*.jsonl`。
+
+**免登录产样本**（同事手上没 Factory 订阅时反复要用）：`~/.factory/settings.json` 写 `customModels[]`，六个键 `model/displayName/baseUrl/apiKey/provider/maxOutputTokens`；
+⚠️ **少 `provider` 时报错是骗人的**（`No custom models configured`，而文件里明明有）—— 整条 entry 被校验静默丢掉。
+再配 `FACTORY_AIRGAP_ENABLED=1` 并**显式 `-m <model>`**（默认 `gpt-6-sol` 走 Factory 代理，airgap 下直接 MetaError），即可完全不登 Factory 账号产真件。
+认证失败时 `droid exec` 会 **exit=1 且 stdout/stderr 双零输出**，真相只在 `~/.factory/logs/droid-log-single.log` 里 —— 判 droid 的失败一律去读它的日志。
+
+回归见 `test/droid-test.mjs`（A–G 七段，含 D2「重启路径」：只清 `entries` 保留 `files` 再扫，断言短路把条数补回来，并做抹掉 `data.turns` 就补不上的反证）。
+
+## goose（Block Goose，2026-10-14 接入）
+
+> 装法是 `irm https://github.com/block/goose/releases/download/v<ver>/goose.zip | …`（本机落在 `~/.local/bin/goose.exe`，v1.54.0，238MB 原生 exe）。
+> 第三方落盘表给的 `~/.local/share/goose` **在 Windows 上根本不存在** —— 真路径是 `%APPDATA%\Block\goose`，
+> 拿 `goose info` 点最快（它自己打 Config dir / Sessions DB (sqlite) / Logs dir 三行）。
+
+**主源**：`<root>/data/sessions/sessions.db`（SQLite + WAL，库很小、整份重读 ⇒ **不进 `OFF_KINDS`**，与 opencode / kilo / hermes / devindb 同路数；`PARSER_REV.goose = 1` 管的是搜索分片作废）。
+**绝不读**：`<root>/config/config.yaml` 与 `<root>/config/custom_providers/*.json` —— 里面是 provider 与 api_key（会话库里没有任何凭证）。
+⚠️ goose 正在跑时它的 provider 文件实测带独占锁（读到过 EPERM），所以**详情不回源重开库**、吃扫描时并进内存的那轮（同 crush / devindb / traedb 的取舍）。
+
+**四条钉死的口径**（`PARSER_REV.goose` 守着，逐条实测来源见 `parsers/goose.mjs` 头）：
+① 开轮 = `role:"user"` 且 `metadata.userVisible !== false` 且有非空 `text` 块；
+② 会话合计只读 `sessions.accumulated_*`，**裸名 `sessions.input_tokens` 那组是最后一次请求的快照**（与 `usage_ledger` 末行逐字相同）—— 命名方向和 crush 那次相反，别照旧直觉读；
+③ `inputTokens` **含**缓存 ⇒ `tin = input − cacheRead`、`tcache = cacheRead`、`ctxUsed = input`；逐次用量在 assistant 行的 `metadata_json.usage`（`elapsedMs` / `timeToFirstTokenMs` / `cost` 都在，`cacheReadTokens` 会**缺键**）；
+④ `created_timestamp` 是 **unix 秒**（入库 ×1000）；工具块叫 `toolRequest` / `toolResponse`、配对键是块上的 `id`。
+
+**一条如实记下的边界**：真件里有 1 条 assistant 行**带 `inference` 却没有 `usage`** ⇒ 我们的 `calls`（assistant 行数）可以比 `usage_ledger` 的行数多一个，这不是重复计数、别去「对齐」。工具失败侧的字面值本机没采到（4 对全 success），解析器只认字面 `error` / `failed`。
+
+回归见 `test/goose-test.mjs`（A–F 六段，含「同名表缺 `metadata_json` 列」的反证件与 E 段的三源对账）。
+
+## openhands（OpenHands V1，2026-10-14 接入）
+
+> 本机经 `uv tool` 安装（`~/.local/bin/openhands.exe` + `openhands-acp.exe`，包体在 `%APPDATA%\uv\tools\openhands`）。
+> 落盘不在 `~/.openhands/conversations` 之外摆 —— 会话根没有环境变量入口（`OPENHANDS_*` 只翻到 SUPPRESS_BANNER / PROJECT_DIR / SESSION_ID 这些），所以 `candidateBases` 走 `.` + 名字的默认约定就命中。
+
+**形状**：**一事件一文件**（`conversations/<会话 uuid>/events/event-<NNNNN>-<uuid>.json`，`NNNNN` 是全局递增序号 ⇒ 文件名排序就是顺序、事件只新增不改写），同目录 `base_state.json` 是会话账本。
+签名因此不是单文件的 `{mtime,size}`，而是「事件数 + 事件总字节 + base_state 的 mtime/size」—— 与 buddyext / goose 同路数，**不进 `OFF_KINDS`**，`PARSER_REV.openhands` 管搜索分片作废。
+
+⚠️ **凭证红线（这次最要紧的一条）**：`base_state.json` 里嵌着 `agent.llm.api_key` 的**明文**（`~/.openhands/agent_settings.json` 整份就是密钥 + 网关配置）。
+⇒ 解析器**只点取白名单字段**（`stats` / `workspace` / `execution_status` / `agent.llm.model`），整份 state 绝不并进 `data`、绝不进详情正文、绝不进全文搜索分片；`test/openhands-test.mjs` 的 G 段用 canary 钉住这一条。
+
+**四条钉死的口径**（`PARSER_REV.openhands` 守着，逐条实测见 `parsers/openhands.mjs` 头）：
+① 开轮 = `MessageEvent` + `source:"user"` + 有非空 text（这一家没有 droid/goose 那种注入行，别顺手加「过滤 system」的动作）；
+② 逐轮 token 源头不可得 ⇒ 三桶与 total/ctxUsed 如实 0，但 **ctx 分母白送**（`context_window`，本机 922000）；
+③ `calls` 按 `llm_response_id` **去重**（一次响应并行出两个 ActionEvent 只算一次调用）、`tools` = ActionEvent 条数；
+④ `timestamp` 不带时区 ⇒ 按本地时间解析；失败只逐项认 `observation.is_error`（另带 `exit_code`），不染红整轮。
+
+回归见 `test/openhands-test.mjs`（A/B/C/D/G，含「会话目录没事件文件不认领」的反证与凭证 canary）。
+
 ## cursor（Cursor IDE 的 Agent 转录）
 
 > **轮时间取新版每条 user 消息开头那个 `<timestamp>` 块**（形如 `Tuesday, Sep 15, 2026, 3:44 PM (UTC+8)`，
@@ -1046,6 +1110,9 @@ kilo 的命中条件见上面 kilo 一节：认 `~/.local/share/kilo/kilo.db` �
 cline 的命中条件见上面 cline 一节：`~/.cline` 下钻到 `data/sessions/<会话 id>/`，判据 = 文件名以 `.messages.json` 结尾 **+** 头 2KB 里同时出现 `"sessionId"` 与 `"messages": [`（整份 JSON 是 pretty-printed，头几个键必在最前，所以只读 2KB）；`sniffBase` 里必须排在 atomcode 兜底之前，否则手工填 `…/data/sessions` 会被认成 atomcode 而 0 条静默。VS Code 系满地的 `nls.messages.json`（顶层是数组）被这条判据挡在外面。
 
 pi 的命中条件见上面 pi 一节：`~/.pi` 下钻到 `agent/sessions/--<cwd 编码>--/*.jsonl`，判据 = **首行**是会话头（`type:"session"` + `version` + `id`，只读头 2KB，与 openclaw 同一条约定）；`PI_CODING_AGENT_DIR` / `PI_CODING_AGENT_SESSION_DIR` 指到哪认到哪，手工填 `~/.pi / agentDir / 会话根 / 单个项目目录` 四种写法都解到同一个**会话根**。⚠️ `sniffBase` 里必须排在 atomcode 兜底之前，否则 `~/.pi` 会被兜底认成 atomcode 而 0 条静默（dsh/kimi/openclaw/cline/buddyext 同源的老坑）。
+droid 的命中条件见上面 droid 一节：`~/.factory` 下钻到 `sessions/<cwd 转义>/*.jsonl`，判据 = **首行**是 `type:"session_start"` + `version` + `id`（只读头 2KB，与 openclaw / pi 同一条约定）；`FACTORY_HOME_OVERRIDE` / `FACTORY_PROFILE_DIR` 指到哪认到哪，手工填 `~/.factory / 会话根 / 单个项目目录` 三种写法都解到同一个**会话根**。⚠️ 与 pi 同源的那个坑这里**双向成立**：`~/.factory` 慢一步会被 atomcode 兜底认走；而**装了还没聊过天**时 `sessions/` 是空的，光靠内容判据认领不到、兜底就会把它注册成一个假的 atomcode 行 —— 所以 `droidTranscripts` 额外带一条**结构指纹**兜底（`sessions/` + `droids/` 或 `prem-auth/` 或 `logs/droid-log-single.log` 三者之一），命中即认领、`files` 留空，聊第一句就有条目，不必重启。
+goose 的命中条件见上面 goose 一节：认 `<root>/data/sessions/sessions.db` 文件本身，判据 = SQLite 页头 `SQLite format 3` + `sessions`/`messages` 两张表齐 **且** `messages` 带 `content_json`/`metadata_json`/`session_id` 三列（**反向排除**：只按表名会把 opencode / kilo / crush 那几家的库接走，它们也叫 `messages`）；手工填 `<root> / data / sessions / db 文件本身` 四种写法都认，返回的是 **db 文件路径**（文件型 ⇒ `confAvailable` 按文件放行，见 zcode 那一支）。⚠️ `sniffBase` 里同样要排在 atomcode 兜底之前。
+openhands 的命中条件见上面 openhands 一节：认 `~/.openhands/conversations/<会话 id>/events/event-<NNNNN>-*.json`，判据 = **文件名形状**（`event-\d+-…\.json`）且至少一个能解析出 `kind` —— ⚠️ `~/.openhands` 下面还躺着 `cache/` 与 `profiles/`，慢一步就被 atomcode 兜底或邻居判据接走（dsh / kimi / openclaw / cline / pi / droid 同源的老坑）。手工填 `~/.openhands / conversations 根 / 单个会话目录` 三种写法都解到同一个**会话根** ⇒ 主文件把 openhands 记进 `ROOT_SESSIONS_AGENTS`（取 dirname 会爬到 `~/.openhands`，那儿有明文密钥的 `agent_settings.json`）。
 
 qwen 的命中条件见上面 qwen 一节：`~/.qwen` 下钻到 `projects/<cwd 编码>/chats/*.jsonl`，判据 = **首行同时带 `sessionId` 与 `provenance`**（claude 那份没有 provenance、openclaw/pi 的消息外面还包一层 `type:"message"` —— 两条都把它俩挡在外面）；`QWEN_HOME` / `QWEN_RUNTIME_DIR` 指到哪认到哪，手工填 `~/.qwen / projects 根 / 单个项目目录 / chats 目录` 都认。⚠️ `sniffBase` 里必须排在 `hasClaudeJsonl` / `hasGeminiSessions` **之前**：`~/.qwen` 同时有 `projects/` 与 `tmp/`，落到那两条判据上会被认成 claude 或 gemini 而静默 0 条（与 dsh/kimi/openclaw/cline/pi 同源的老坑）。
 crush 的命中条件见上面 crush 一节：候选是**数据目录**（Win=`%LOCALAPPDATA%\crush`、POSIX=`~/.local/share/crush`、`CRUSH_GLOBAL_DATA` 覆盖），判据 = 目录里有 `projects.json`，或 `<项目>/.crush/crush.db` 过得了列判据（页头 + `messages` 表同时有 `parts` 与 `is_summary_message`）；手工填 数据目录 / 项目目录 / `.crush` 目录 / 库文件 四种都认。⚠️ 判据**不许回落到本机数据目录**（那会把任何无关路径认成 crush、认的还是这台机器那份真数据 —— 测试里真踩过），也⚠️ 不许只按表名认（`sessions`/`messages` 与 opencode 家族只差一个复数 s）。

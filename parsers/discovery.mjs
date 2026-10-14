@@ -11,6 +11,9 @@ import { hasMavisSession } from './minimax.mjs';
 import { OPENCLAW_STATE_DIRNAMES, openclawTranscripts } from './openclaw.mjs';
 import { clineTranscripts } from './cline.mjs';
 import { piTranscripts } from './pi.mjs';
+import { droidTranscripts } from './droid.mjs';
+import { gooseDbFrom } from './goose.mjs';
+import { openhandsConversation } from './openhands.mjs';
 import { qwenProjectsRoot } from './qwen.mjs';
 import { crushRoot, crushDataDir } from './crush.mjs';
 import { CODEARTS_DOER_ONLY_TABLES, codeartsDoerDbFile } from './codeartsdb.mjs';
@@ -40,6 +43,9 @@ const NAME_ALIASES = {
   minimax: ['minimax', 'Mavis'],
   mimocode: ['mimocode'],
   kilo: ['kilo', 'kilocode'],
+  // droid（Factory Droid CLI）的产品名是 droid，但它的落盘目录叫 **`.factory`**（真件核实：
+  // ~/.factory/sessions/…）。不加这条别名，basesFor 只会铺 ~/.droid 那种猜出来的路径，自动发现永远落空。
+  droid: ['factory'],
 };
 // 「只给诊断看、**不参与自动发现**」的候选路径。
 //
@@ -200,6 +206,29 @@ function candidateBases(name, c) {
       if (!v) continue;
       out.push(v.startsWith('~') ? path.join(home, v.replace(/^~[\\/]?/, '')) : v);
     }
+  }
+  // droid（Factory Droid CLI）：会话在 <home>/.factory/sessions/<cwd 转义>/<会话 id>.jsonl。
+  // 二进制里认这两个改写点：FACTORY_HOME_OVERRIDE 整棵数据目录搬走、FACTORY_PROFILE_DIR 换 profile 根
+  // —— 铺「指哪儿认哪儿」的那一层，droidTranscripts 自己上下探（默认摆法的 ~/.factory 由别名 factory 铺好）。
+  // ⚠️ 测试里必须显式覆盖 FACTORY_HOME_OVERRIDE：本机 ~/.factory 有用户的真会话，靠「隔离 HOME」挡不住它
+  //    （comate / hermes 都在这上面栽过：用户级环境变量会击穿隔离 profile）。
+  if (name === 'droid') {
+    for (const k of ['FACTORY_HOME_OVERRIDE', 'FACTORY_PROFILE_DIR']) {
+      const v = env[k] && String(env[k]).trim();
+      if (!v) continue;
+      out.push(v.startsWith('~') ? path.join(home, v.replace(/^~[\\/]?/, '')) : v);
+    }
+  }
+  // goose（Block 的 Goose CLI）：Windows 的真路径**不走 `~/.goose` 也不走 `%APPDATA%\goose`**，
+  // 而是 `%APPDATA%\Block\goose`（`goose info` 自己打出来的；POSIX 侧才是 `~/.local/share/goose` 那条约定）。
+  // 第三方落盘表在 Windows 上写的就是 `~/.local/share/goose` —— 本机实测该目录不存在，靠下面这条真路径命中。
+  // `GOOSE_PATH_ROOT` 可整棵挪走（crates/goose/src/config/paths.rs），指哪儿认哪儿。
+  if (name === 'goose') {
+    if (env.GOOSE_PATH_ROOT) {
+      const v = String(env.GOOSE_PATH_ROOT).trim();
+      if (v) out.push(v.startsWith('~') ? path.join(home, v.replace(/^~[\\/]?/, '')) : v);
+    }
+    if (platform === 'win32' && env.APPDATA) out.push(path.join(env.APPDATA, 'Block', 'goose'));
   }
   // cline（Cline CLI 3.x）：会话在 <data>/sessions/<会话 id>/<会话 id>.messages.json，
   // data 根默认 `~/.cline/data`（basesFor 铺的 `~/.cline` 由 clineTranscripts 自己下探到 data/sessions）。
@@ -1196,6 +1225,28 @@ export function sniffBase(base) {
   // ⚠️ sessions 存的是**会话根本身**（那一层可被 PI_CODING_AGENT_SESSION_DIR / settings.sessionDir
   //    改名挪走，不能再靠 join('sessions') 拼），所以主文件把 pi 记进了 ROOT_SESSIONS_AGENTS。
   { const pp = piTranscripts(base); if (pp) return { kind: 'pi', sessions: pp.root, traces: null }; }
+  // droid（Factory Droid CLI）：真源是 <home>/.factory/sessions/<cwd 转义>/<会话 id>.jsonl。
+  // 同样必须抢在 atomcode 兜底之前：手工填 ~/.factory 时，兜底看到的是「有子目录的根」，而它找的是
+  // <hash>/*.jsonl|*.meta 那种摆法 → 0 条且静默（与 dsh / kimi / openclaw / cline / pi 当初同源）。
+  // ⚠️ 更要紧的是 ~/.factory 底下躺着 logs/ cache/ state/ telemetry/ —— 慢一步就会被别的目录形状判据接走。
+  // 判据是**内容**（首行须是 {"type":"session_start","version":…,"id":…}），名字猜错不会误接邻居的数据。
+  // ⚠️ sessions 存的是**会话根本身**（可被 FACTORY_HOME_OVERRIDE / FACTORY_PROFILE_DIR 挪走）
+  //    ⇒ 主文件把 droid 记进 ROOT_SESSIONS_AGENTS。
+  { const dr = droidTranscripts(base); if (dr) return { kind: 'droid', sessions: dr.root, traces: null }; }
+  // goose（Block Goose）：真源是 <root>/data/sessions/sessions.db（**文件型 kind，sessions 存 db 路径**，
+  // 与 zcode / opencode / kilo / hermes / devindb 同款 ⇒ 主文件的 confAvailable 按文件放行）。
+  // 必须抢在 atomcode 兜底之前：手工填 `%APPDATA%\Block\goose` 或 `…\goose\data\sessions` 时，
+  // 兜底那条都接不住 → 0 条静默。判据是**库内容**（SQLite 页头 + sessions/messages 两张表 +
+  // messages 必须带 content_json / metadata_json / session_id 三列 —— 别家也叫 messages，靠列集合区分）。
+  { const g = gooseDbFrom(base); if (g) return { kind: 'goose', sessions: g, traces: null }; }
+  // openhands（OpenHands V1）：真源是 <home>/.openhands/conversations/<会话 id>/events/event-<NNNNN>-<uuid>.json
+  // （**一事件一文件**）。必须抢在 atomcode 兜底之前：~/.openhands 下面还有 cache/ 与 profiles/，
+  // 兜底与邻居判据都会把它接走 → 0 条静默（dsh / kimi / openclaw / cline / pi / droid 同源的老坑）。
+  // 判据是**内容**（events/ 下至少一个 event-\d+-*.json 且能解析出 kind + source），
+  // 手工填 ~/.openhands / conversations 根 / 单个会话目录 三种写法都解到同一个会话根。
+  // ⚠️ sessions 存的是 **conversations 根**（取 dirname 会爬到 ~/.openhands，那儿躺着 agent_settings.json
+  //    明文密钥与 cache/）⇒ 主文件把 openhands 记进 ROOT_SESSIONS_AGENTS。
+  { const oh = openhandsConversation(base); if (oh) return { kind: 'openhands', sessions: oh.root, traces: null }; }
   // qwen（Qwen Code，阿里通义千问的 CLI，gemini-cli 的 fork）：真源是 <home>/.qwen/projects/<项目>/chats/<会话 id>.jsonl。
   // 必须抢在下面那一大片目录形状判据之前：~/.qwen 同时有 projects/ 与 tmp/，落到 hasClaudeJsonl /
   // hasGeminiSessions 手上会被认成 claude 或 gemini —— 两家的行形状与 qwen 不同（qwen 每条行自带

@@ -5,7 +5,7 @@
 本地 AI agent 请求日志面板：聚合多款 AI agent 写在磁盘上的会话日志，在浏览器里查看每一「轮次/请求」的耗时、token、缓存命中、上下文占用与工具调用明细。
 
 - 本地常驻服务 + SSE 实时推送，**无外部依赖、无网络上报、纯只读旁路**（不注入、不改各 agent 的配置）
-- 一个页面看 27 家 agent：atomcode / codebuddy / workbuddy / claude / codex / cursor / trae / qoder / opencode / gemini / copilot / windsurf / codearts / kimi / dsh / zcode / doubao / hermes / devin / minimax / mimocode / kilo / openclaw / cline / pi / qwen / crush
+- 一个页面看 31 家 agent：atomcode / codebuddy / workbuddy / claude / codex / cursor / trae / qoder / opencode / gemini / copilot / windsurf / codearts / kimi / dsh / zcode / doubao / hermes / devin / minimax / mimocode / kilo / openclaw / comate / cline / pi / qwen / crush / droid / goose / openhands
 - 另有桌面悬浮卡片（Electron 小窗）：今日/累计 token + 最新卡片流
 
 要求：机器上有 `node`（`node -v` 可用即可，`>=22.5`）。**Windows 是主要验证平台**；mac / Linux / 鸿蒙 PC
