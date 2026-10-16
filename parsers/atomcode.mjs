@@ -1,9 +1,16 @@
-// ---------------- atomcode 解析器（sessions/<hash>/*.meta + *.jsonl） ----------------
+// ---------------- atomcode 解析器（sessions/<hash>/ 两代落盘格式） ----------------
+// 2026-10-12 起 atomcode 自己换了一次盘上格式，两代并存，老会话还得能看：
+//   老一代：<uuid>.meta（轮统计）+ <uuid>.jsonl（一行一轮，user/assistant/tools 同行）
+//   新一代：<uuid>.index（≡ .meta，只多一个 format_version=13）+ <uuid>.events（事件流，
+//           每行 {seq, at(ms), event:{kind, turn, …}}，一轮摊成 turn_start / user_message /
+//           assistant_message / tool_started / tool_result_logged / usage / turn_end）
+// .index 与 .meta 的 turn_stats 字段逐个相同，所以**轮统计口径两代共用 expandMeta**；
+// 真正分叉的只有「正文/工具/轮时间戳从哪来」，即下面按扩展名分派的两个 reader。
 // 从 agent-acta-server.mjs 拆出（纯搬家，逻辑零改动）。导出：
-//   expandMeta      —— .meta 轮次 → 条目（scanAtomcodeDir 与分片首扫共用）
-//   scanAtomcodeDir —— 一个 hash 会话目录：*.jsonl 逐行增量（轮时间戳/预览）+ *.meta 全量
+//   expandMeta      —— 轮统计 → 条目（scanAtomcodeDir 与分片首扫共用）
+//   scanAtomcodeDir —— 一个 hash 会话目录：正文文件逐行增量（轮时间戳/预览/工具名）+ 轮统计全量
 //   atomcodeDirs    —— hash 会话目录列表
-//   atomcodeEntryContent —— 单轮详情（重读 .jsonl 取正文/工具；逐次调用来自 datalog）
+//   atomcodeEntryContent —— 单轮详情（重读正文文件取正文/工具；逐次调用来自 datalog）
 //   datalogCalls / datalogDir —— 逐次 LLM 调用明细（数据源，atomcodeEntryContent 内部调用）
 import fs from 'node:fs';
 import path from 'node:path';
@@ -117,13 +124,29 @@ function parseDatalogMd(text) {
 }
 
 // 同一份 .md 会随会话进行不断变长，而 live 的条目每个扫描周期都会被重新取一次详情——
+// 两代的落盘文件后缀。剥掉它们得到会话 uuid —— datalog 是按 uuid 挂的，两代都得剥干净，
+// 否则 'xxx.events' 当成 uuid 去查 → 逐次明细静默消失（一条错误都不报）。
+const AC_META_SUFFIXES = ['.meta', '.index'];
+const AC_BODY_SUFFIXES = ['.jsonl', '.events'];
+const AC_SUFFIXES = [...AC_META_SUFFIXES, ...AC_BODY_SUFFIXES];
+function acUuid(name) {
+  const base = path.basename(name);
+  for (const s of AC_SUFFIXES) if (base.endsWith(s)) return base.slice(0, -s.length).toLowerCase();
+  return base.toLowerCase();
+}
+function acSuffix(name) { return AC_SUFFIXES.find(s => name.endsWith(s)); }
+
+// index 分片按 state.kind 分组落盘：老一代沿用 'jsonl' / 'meta'，新一代各给一个名字，
+// 免得两代混进同一份分片、日后按口径作废时分不清。
+const bodyKind = s => (s === '.events' ? 'events' : 'jsonl');
+const metaKind = s => (s === '.index' ? 'index' : 'meta');
+
 // 用 {mtime,size} 当版本号挡住重复解析（statSync 比重读+解析一个几 MB 的 md 便宜得多）。
 const dlCache = new Map();
 export function datalogCalls(src, fallbackModel) {
   const dir = datalogDir();
   if (!dir) return [];
-  const base = path.basename(src.file);
-  const uuid = (base.endsWith('.jsonl') ? base.slice(0, -6) : base).toLowerCase();
+  const uuid = acUuid(src.file);
   const f = datalogIndex(dir).get(uuid + '#' + src.turn);
   if (!f) return [];
   let calls, key;
@@ -151,7 +174,9 @@ export function datalogCalls(src, fallbackModel) {
 
 // ---------------- 条目生成 ----------------
 export function expandMeta(agent, metaPath, base, jsonlRef, data) {
-  const jsonlPath = jsonlRef ? jsonlRef[0] : metaPath.slice(0, -5) + '.jsonl';
+  // 同批没有正文文件时，退到「同名的那一代」：.meta → .jsonl、.index → .events。
+  const jsonlPath = jsonlRef ? jsonlRef[0]
+    : metaPath.slice(0, -acSuffix(metaPath).length) + (metaPath.endsWith('.index') ? '.events' : '.jsonl');
   const jdata = jsonlRef ? files.get(jsonlRef[0])?.data : null;
   const turnTs = jdata?.turnTs || {};
   const preview = jdata?.preview || {};
@@ -198,59 +223,90 @@ export function expandMeta(agent, metaPath, base, jsonlRef, data) {
 }
 
 // ---------------- 扫描 ----------------
+// 正文文件的一行 → 轮状态（老一代 .jsonl：一行 = 一轮，turn_id/ts/started_at/user/tools 都在这一行）。
+// I16 / D1：`ts` 是**轮结束**时刻、`started_at` 才是**轮起点**（全项目口径取起点）。
+// 两个都收下来，emit 时优先用 started_at（见 expandMeta），拿不到才退 `ts − duration_ms`。
+// 老 state 没有 turnStart ⇒ 缺这一位时回落仍成立，不会把已有的轮时间弄丢。
+function applyJsonlLine(line, data) {
+  const tm = line.match(/"turn_id":(\d+)/), tsm = line.match(/"ts":(\d+)/), sam = line.match(/"started_at":(\d+)/);
+  if (!tm || (!tsm && !sam)) return;
+  const tid = tm[1];
+  if (tsm && !data.turnTs[tid]) data.turnTs[tid] = Number(tsm[1]);
+  if (!data.turnStart) data.turnStart = {};
+  if (sam && !data.turnStart[tid]) data.turnStart[tid] = Number(sam[1]);
+  if (!data.preview[tid]) {
+    const um = line.match(/"user":"((?:[^"\\]|\\.)*)"/);
+    if (um) data.preview[tid] = um[1].replace(/\\n/g, ' ').replace(/\\"/g, '"').replace(/\\u[\dA-Fa-f]{4}/g, '·').slice(0, 200);
+  }
+  // 工具名去重计数（卡片「调用」旁的问号悬浮层数据源）：jsonl 每行的 tools[] 带逐个 name。
+  // 用 JSON.parse 而不是正则：tools 的 args 字符串里可能含 ] 等字符，正则会断在半路
+  // （实测一轮 7 个 edit_file 只数出 1 个）。解析失败的行宁可丢掉也不数错。
+  try {
+    const j = JSON.parse(line);
+    if (Array.isArray(j.tools) && j.tools.length) {
+      if (!data.toolNames[tid]) data.toolNames[tid] = {};
+      const tn = data.toolNames[tid];
+      for (const tl of j.tools) { const n = tl && tl.name; if (n) tn[n] = (tn[n] || 0) + 1; }
+    }
+  } catch {}
+}
+
+// 正文文件的一行 → 轮状态（新一代 .events：一行 = 一个事件，一轮摊成十几到几百个事件）。
+// 只取扫描侧要的这四样，正文本身留给详情按需重读 —— 与 .jsonl 分支口径逐项对齐：
+// turn_start.at ↔ started_at、turn_end.at ↔ ts、user_message.text ↔ user、tool_started.call.name ↔ tools[].name。
+function applyEventsLine(line, data) {
+  let j; try { j = JSON.parse(line); } catch { return; }
+  const e = j.event, at = Number(j.at);
+  if (!e || typeof e.turn !== 'number' || !Number.isFinite(at)) return;
+  const tid = String(e.turn);
+  if (e.kind === 'turn_start') {
+    if (!data.turnStart) data.turnStart = {};
+    if (!data.turnStart[tid]) data.turnStart[tid] = at;
+  } else if (e.kind === 'turn_end') {
+    if (!data.turnTs[tid]) data.turnTs[tid] = at;
+  } else if (e.kind === 'user_message') {
+    if (!data.preview[tid] && typeof e.text === 'string' && e.text !== '') {
+      data.preview[tid] = e.text.replace(/\r?\n/g, ' ').slice(0, 200);
+    }
+  } else if (e.kind === 'tool_started') {
+    const n = e.call && e.call.name;
+    if (!n) return;
+    if (!data.toolNames[tid]) data.toolNames[tid] = {};
+    const tn = data.toolNames[tid];
+    tn[n] = (tn[n] || 0) + 1;
+  }
+}
+
 export function scanAtomcodeDir(agent, names, dir) {
-  const metas = [], jsonls = new Map();
+  const metas = [], bodies = new Map(); // bodies: 会话 uuid → [路径, stat, 后缀]
   for (const n of names) {
     const fp = path.join(dir, n);
     let fst; try { fst = fs.statSync(fp); } catch { continue; }
     if (!fst.isFile()) continue;
-    if (n.endsWith('.meta')) metas.push([fp, fst]);
-    else if (n.endsWith('.jsonl')) jsonls.set(n.slice(0, -6), [fp, fst]);
+    const suffix = acSuffix(n);
+    if (!suffix) continue;
+    if (AC_META_SUFFIXES.includes(suffix)) metas.push([fp, fst, suffix]);
+    else bodies.set(n.slice(0, -suffix.length), [fp, fst, suffix]);
   }
-  for (const [base, [fp, fst]] of jsonls) {
+  for (const [base, [fp, fst, suffix]] of bodies) {
     const key = fp, m = fst.mtimeMs, s = fst.size;
     const prev = files.get(key);
     if (prev && prev.m === m && prev.s === s) continue;
     const off = prev?.off || 0;
     let data = prev?.data || { turnTs: {}, turnStart: {}, preview: {}, toolNames: {} };
     if (s <= off) continue;
+    const apply = suffix === '.events' ? applyEventsLine : applyJsonlLine;
     try {
       // 只推进到最后一个完整行，避免半截行被吞（旧版 off=size+shift 每次追加丢一条）
       const rd = readCompleteLines(fp, off, s);
-      if (!rd) { files.set(key, { agent, kind: 'jsonl', m, s, off, data }); continue; }
-      const newOff = rd.newOff;
-      for (const line of rd.lines) {
-        // I16 / D1：`ts` 是**轮结束**时刻、`started_at` 才是**轮起点**（全项目口径取起点）。
-        // 两个都收下来，emit 时优先用 started_at（见 expandMeta），拿不到才退 `ts − duration_ms`。
-        // 老 state 没有 turnStart ⇒ 缺这一位时回落仍成立，不会把已有的轮时间弄丢。
-        const tm = line.match(/"turn_id":(\d+)/), tsm = line.match(/"ts":(\d+)/), sam = line.match(/"started_at":(\d+)/);
-        if (!tm || (!tsm && !sam)) continue;
-        const tid = tm[1];
-        if (tsm && !data.turnTs[tid]) data.turnTs[tid] = Number(tsm[1]);
-        if (!data.turnStart) data.turnStart = {};
-        if (sam && !data.turnStart[tid]) data.turnStart[tid] = Number(sam[1]);
-        if (!data.preview[tid]) {
-          const um = line.match(/"user":"((?:[^"\\]|\\.)*)"/);
-          if (um) data.preview[tid] = um[1].replace(/\\n/g, ' ').replace(/\\"/g, '"').replace(/\\u[\dA-Fa-f]{4}/g, '·').slice(0, 200);
-        }
-        // 工具名去重计数（卡片「调用」旁的问号悬浮层数据源）：jsonl 每行的 tools[] 带逐个 name。
-        // 用 JSON.parse 而不是正则：tools 的 args 字符串里可能含 ] 等字符，正则会断在半路
-        // （实测一轮 7 个 edit_file 只数出 1 个）。解析失败的行宁可丢掉也不数错。
-        try {
-          const j = JSON.parse(line);
-          if (Array.isArray(j.tools) && j.tools.length) {
-            if (!data.toolNames[tid]) data.toolNames[tid] = {};
-            const tn = data.toolNames[tid];
-            for (const tl of j.tools) { const n = tl && tl.name; if (n) tn[n] = (tn[n] || 0) + 1; }
-          }
-        } catch {}
-      }
-      files.set(key, { agent, kind: 'jsonl', m, s, off: newOff, data });
-      markKind('jsonl');
+      if (!rd) { files.set(key, { agent, kind: bodyKind(suffix), m, s, off, data }); continue; }
+      for (const line of rd.lines) apply(line, data);
+      files.set(key, { agent, kind: bodyKind(suffix), m, s, off: rd.newOff, data });
+      markKind(bodyKind(suffix));
     } catch {}
   }
-  for (const [fp, fst] of metas) {
-    const base = path.basename(fp).slice(0, -5);
+  for (const [fp, fst, suffix] of metas) {
+    const base = acUuid(fp);
     const key = fp, m = fst.mtimeMs, s = fst.size;
     const prev = files.get(key);
     if (prev && prev.m === m && prev.s === s) continue;
@@ -269,8 +325,9 @@ export function scanAtomcodeDir(agent, names, dir) {
         })),
       };
     } catch { continue; }
-    files.set(key, { agent, kind: 'meta', m, s, off: 0, data });
-    expandMeta(agent, fp, base, jsonls.get(base), data);
+    files.set(key, { agent, kind: metaKind(suffix), m, s, off: 0, data });
+    const body = bodies.get(base);
+    expandMeta(agent, fp, base, body ? [body[0], body[1]] : undefined, data);
   }
 }
 
@@ -283,18 +340,13 @@ export function atomcodeDirs(root) {
   return out;
 }
 
-// 详情：重读 sessions 的 .jsonl 按 turn_id 过滤取正文/工具，逐次调用明细来自 datalog（见上）。
-// entry 是扫描侧产出的条目（models / calls）——只作兜底用，从参数传入，避免这里反向去查全局表。
-export function atomcodeEntryContent(src, full, entry) {
-  const fstate = files.get(src.file);
-  const version = fstate ? fstate.m + ':' + (fstate.off || 0) : null;
-  let out = null;
-  const lines = fs.readFileSync(src.file, 'utf8').split('\n');
-  for (const line of lines) {
+// 详情 · 老一代 .jsonl：一行一轮，user / assistant / tools[] 同行。
+function jsonlTurnContent(src, full) {
+  const out = { user: '', assistant: '', tools: [] };
+  for (const line of fs.readFileSync(src.file, 'utf8').split('\n')) {
     if (!line.trim()) continue;
     let j; try { j = JSON.parse(line); } catch { continue; }
     if (j.turn_id !== src.turn) continue;
-    if (!out) out = { user: '', assistant: '', tools: [] };
     if (j.user && !out.user) out.user = String(j.user);
     // 一轮多 round：assistant 逐行累加（原为覆盖，中间输出会丢）
     if (j.assistant) out.assistant = out.assistant ? out.assistant + '\n\n---\n\n' + j.assistant : String(j.assistant);
@@ -303,11 +355,75 @@ export function atomcodeEntryContent(src, full, entry) {
       out.tools.push({ name: tl.name, input: trunc(tl.args, full, fi), inputTrunc: !!fi.t, output: trunc(tl.result, full, fo), outputTrunc: !!fo.t, error: !!tl.is_error });
     }
   }
-  if (!out) out = { user: '', assistant: '', tools: [] };
+  return out;
+}
+
+// 详情 · 新一代 .events：一轮摊成多个事件，工具拆成「发起 + 回执」两条，按 call.id 回填。
+// 顺带把逐轮 LLM 账记下来（roundCalls）：10-12 起 atomcode 不再往 datalog 落盘，
+// 而 request_header / usage / assistant_message.meta 三个事件正好凑齐 datalog 那四列。
+function eventsTurnContent(src, full) {
+  const out = { user: '', assistant: '', tools: [], roundCalls: [] };
+  const byId = new Map();
+  const rounds = new Map();
+  const round = n => {
+    if (!rounds.has(n)) { const r = { model: '', tin: 0, tout: 0, tcache: 0, dur: 0 }; rounds.set(n, r); out.roundCalls.push(r); }
+    return rounds.get(n);
+  };
+  for (const line of fs.readFileSync(src.file, 'utf8').split('\n')) {
+    if (!line.trim()) continue;
+    let j; try { j = JSON.parse(line); } catch { continue; }
+    const e = j.event;
+    if (!e || e.turn !== src.turn) continue;
+    if (e.kind === 'user_message' && !out.user && e.text) out.user = String(e.text);
+    else if (e.kind === 'assistant_message' && e.text) {
+      out.assistant = out.assistant ? out.assistant + '\n\n---\n\n' + String(e.text) : String(e.text);
+      if (typeof e.round === 'number') round(e.round).dur = Number(e.meta?.elapsed_ms) || 0;
+    } else if (e.kind === 'request_header' && typeof e.round === 'number') {
+      round(e.round).model = String(e.model || '');
+    } else if (e.kind === 'usage' && typeof e.round === 'number') {
+      const u = e.usage || {};
+      const prompt = Number(u.prompt) || 0, cache = Number(u.cached) || 0;
+      const r = round(e.round);
+      // 口径对齐 datalogCalls：面板的 tin 是**不含**缓存的输入（那边写的是 prompt − cache）。
+      r.tin = Math.max(0, prompt - cache); r.tout = Number(u.completion) || 0; r.tcache = cache;
+    } else if (e.kind === 'tool_started') {
+      const fi = {};
+      const t = { name: e.call?.name, input: trunc(e.call?.arguments, full, fi), inputTrunc: !!fi.t, output: '', outputTrunc: false, error: false };
+      out.tools.push(t);
+      if (e.call?.id) byId.set(e.call.id, t);
+    } else if (e.kind === 'tool_result_logged') {
+      const fo = {};
+      const body = trunc(e.content, full, fo);
+      const t = byId.get(e.call_id);
+      // 发起那条没落进来（日志被裁/跨代混写）时也要把结果留下，名字标成 '?' 而不是丢掉。
+      if (t) { t.output = body; t.outputTrunc = !!fo.t; t.error = !!e.is_error; }
+      else out.tools.push({ name: '?', input: '', inputTrunc: false, output: body, outputTrunc: !!fo.t, error: !!e.is_error });
+    }
+  }
+  // 只有真跑过一次的 round 才算一条调用（request_header 有、usage 没有 = 请求没回来）。
+  out.roundCalls = out.roundCalls.filter(r => r.tin || r.tout || r.tcache);
+  return out;
+}
+
+// 详情：重读会话的正文文件按轮取正文/工具（两代格式各一个 reader），逐次调用明细来自 datalog（见上）。
+// entry 是扫描侧产出的条目（models / calls）——只作兜底用，从参数传入，避免这里反向去查全局表。
+export function atomcodeEntryContent(src, full, entry) {
+  const fstate = files.get(src.file);
+  const version = fstate ? fstate.m + ':' + (fstate.off || 0) : null;
+  const out = src.file.endsWith('.events') ? eventsTurnContent(src, full) : jsonlTurnContent(src, full);
   // 逐次 LLM 调用明细来自 datalog（sessions 里没有这个粒度），没有就空数组 → 页面那块不渲染。
-  // 注意：sessions 的 .jsonl 可能是 0 字节（实测有这种会话），此时上面循环啥也没读到，
+  // 注意：正文文件可能是 0 字节（实测有这种会话），此时上面啥也没读到，
   // 但 datalog 照旧能给明细，所以 calls 必须挂在「读不到正文」这个分支之外。
   out.calls = datalogCalls(src, (entry?.models || [])[0]);
+  // 新一代 atomcode 不再往 datalog 落盘（本机实测：datalog 6719 个文件里，10-12 之后的会话 0 个），
+  // 所以 datalog 给不出明细时改用 .events 里的逐轮账 —— 不这么做的话新会话点开一轮，
+  // 「N 次 LLM」永远是空列表。
+  const fromEvents = out.roundCalls;
+  out.roundCalls = undefined;
+  if (!out.calls.length && fromEvents?.length) {
+    const fallback = (entry?.models || [])[0] || '';
+    out.calls = fromEvents.map(c => ({ ...c, model: c.model || fallback }));
+  }
   // 卡片上写着「N 次 LLM」却一条明细都拿不出来时，得说清为什么——不然看着像坏了。
   // 两种情况分开写：开关/目录压根没开（用户能去开），和这一轮恰好没落盘（只能等）。
   if (!out.calls.length) {

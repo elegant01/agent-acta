@@ -272,7 +272,7 @@ const ARCHIVE_DEFAULT = { enabled: true, maxDays: 0, maxMB: 0, skip: [] };
 let archiveCfg = { ...ARCHIVE_DEFAULT, skip: [] };
 
 // 默认 agent（原"内置"）：全部走 config，可禁用、可覆盖路径；builtin:true 不可删除只能禁用
-//   kind=atomcode:   sessions/<hash>/*.meta + *.jsonl
+//   kind=atomcode:   sessions/<hash>/ 两代：<uuid>.meta + <uuid>.jsonl（老）｜<uuid>.index + <uuid>.events（10-12 起）
 //   kind=trace:      sessions/<pid>.json + traces/<pid>/trace_*.json
 //   kind=buddyjsonl: projects/<项目slug>/<sessionId>.jsonl（codebuddy / workbuddy 的会话正文）
 //   kind=gemini:     tmp/<项目slug>/{chats/session-*.json 会话正文, logs.json 提示词流水}
@@ -1813,13 +1813,15 @@ function sliceFiles(kind, root) {
 
 // 原子码的切片：一个 hash 目录里可能堆着几千个会话文件（本机实测 2200 个，单这一坨就 ~0.6s），
 // 按目录切不够，要按「同一目录下的一批会话」再切。
-// 关键约束：一个会话的 .jsonl 和 .meta 必须落在同一批 —— scanAtomcodeDir 用同批的 jsonls
-// 给 meta 补轮次时间戳/预览，拆开首扫就会全变成无预览条目（且下次 meta 没变不再重扫，不会自愈）。
+// 关键约束：一个会话的正文与轮统计必须落在同一批 —— scanAtomcodeDir 用同批的正文文件
+// 给轮统计补时间戳/预览，拆开首扫就会全变成无预览条目（且下次轮统计没变不再重扫，不会自愈）。
 // 所以按「去掉扩展名后的会话名」分组，再按组切批，而不是直接切文件列表。
+// 扩展名两代都要列进来：老一代 .jsonl + .meta，新一代 .events + .index（10-12 起 atomcode 换的），
+// 漏掉新那一对的话同一会话会被拆进两批，正是一开始要避免的那种坏法。
 function atomcodeBatches(names, size) {
-  const groups = new Map(); // 会话名 -> 它的文件（.jsonl + .meta）
+  const groups = new Map(); // 会话名 -> 它的文件（正文 + 轮统计）
   for (const n of names) {
-    const base = n.replace(/\.(jsonl|meta)$/, '');
+    const base = n.replace(/\.(jsonl|meta|index|events)$/, '');
     if (!groups.has(base)) groups.set(base, []);
     groups.get(base).push(n);
   }
