@@ -71,6 +71,7 @@ import { scanPi, piEntryContent, piUserText } from '../parsers/pi.mjs';
 import { scanDroid, droidEntryContent, droidUserText, droidIsUserPrompt } from '../parsers/droid.mjs';
 import { scanGoose, gooseEntryContent } from '../parsers/goose.mjs';
 import { scanOpenhands, openhandsEntryContent } from '../parsers/openhands.mjs';
+import { scanCommandcode, commandcodeEntryContent, commandcodeIsTurnStart } from '../parsers/commandcode.mjs';
 // qwen（Qwen Code，阿里通义千问的 CLI、gemini-cli 的 fork）：~/.qwen/projects/<项目>/chats/<会话 id>.jsonl
 import { scanQwen, qwenEntryContent, qwenUserText } from '../parsers/qwen.mjs';
 // crush（Charm 的终端 agent）：**每个项目一份** <cwd>/.crush/crush.db，数据目录里的 projects.json 是索引
@@ -291,7 +292,7 @@ const DEFAULT_AGENTS = {
 // traework 与 trae 都在名单里：装在同一台机器上的两个产品（Trae CN / Trae Work / Trae SOLO）
 // 各自走 NAME_ALIASES 中的不同别名，被 sniffBase 区分成 tracecode 与 tracework 两个 kind。
 // kilo 与 opencode 也是各自独立的一行：装了 KiloCode 的机器上两家库会同时在（名字不同、kind 不同）。
-const KNOWN_AGENTS = ['claude', 'codex', 'cursor', 'trae', 'traework', 'qoder', 'opencode', 'gemini', 'copilot', 'windsurf', 'codearts', 'kimi', 'dsh', 'zcode', 'doubao', 'hermes', 'devin', 'minimax', 'mimocode', 'kilo', 'openclaw', 'comate', 'cline', 'pi', 'qwen', 'crush', 'droid', 'goose', 'openhands'];
+const KNOWN_AGENTS = ['claude', 'codex', 'cursor', 'trae', 'traework', 'qoder', 'opencode', 'gemini', 'copilot', 'windsurf', 'codearts', 'kimi', 'dsh', 'zcode', 'doubao', 'hermes', 'devin', 'minimax', 'mimocode', 'kilo', 'openclaw', 'comate', 'cline', 'pi', 'qwen', 'crush', 'droid', 'goose', 'openhands', 'commandcode'];
 
 const agentConfs = new Map(); // name -> {kind, sessions, sessionsExtra?, traces, builtin, enabled, source, missing}
 
@@ -1165,7 +1166,11 @@ function confAvailable(c) {
 //              重嗅被别的判据接走就是 comate 那种「条数每轮闪」的病）
 // 重新嗅探时若对它们取 path.dirname 会爬到**上层**，从而认成隔壁 agent（mimocode 的真实事故）
 // 或退化成 atomcode。按 name 判断，不按 kind —— kind 正是可能被改坏的那个字段。
-const ROOT_SESSIONS_AGENTS = new Set(['copilot', 'minimax', 'mimocode', 'openclaw', 'comate', 'pi', 'qwen', 'crush', 'droid', 'openhands']);
+const ROOT_SESSIONS_AGENTS = new Set(['copilot', 'minimax', 'mimocode', 'openclaw', 'comate', 'pi', 'qwen', 'crush', 'droid', 'openhands',
+  // commandcode：sessions 存的就是 **projects 根**（`~/.commandcode/projects`），它的上一级 `~/.commandcode`
+  // 底下躺着 providers.json（网关配置、baseURL 可能嵌凭证）与 cache/ taste/ —— dirname 爬上去会认错源，
+  // 与 comate / droid / openhands 同一型（见 parsers/discovery.mjs 的嗅探分支）。
+  'commandcode']);
 
 // 只用**本 agent 自己的**候选路径重新推导配置（candidateBases + sniffBase）。
 // 用途：配置里的 sessions 被别的 agent 抢走 / 被改错时，回到本源把它找回来。
@@ -1581,6 +1586,8 @@ function scanBranch(conf) {
     case 'goose': return { kind: 'goose', list: conf.sessions };
     // openhands（OpenHands）：list = conversations 根，解析器内部逐会话目录读 events/*.json
     case 'openhands': return { kind: 'openhands', list: conf.sessions };
+    // commandcode（Command Code）：list = projects 根，解析器内部枚举 <cwd 转义>/<会话 uuid>.jsonl
+    case 'commandcode': return { kind: 'commandcode', list: conf.sessions };
     // crush：list = 数据目录 / 项目目录 / 某一份 crush.db，解析器按 projects.json 展开成 N 份库
     case 'crush': return { kind: 'crush', list: conf.sessions };
     case 'generic-jsonl': return { kind: 'generic-jsonl', list: conf.sessions };
@@ -1750,6 +1757,10 @@ function scanOneAgent(agent, conf, onlyFile) {
     // 事件里没有 usage ⇒ 逐轮 token 如实 0（droid 那一档），但 ctx 分母白送（base_state 的 context_window）。
     // ⚠️ base_state.json 里嵌明文 api_key ⇒ 解析器只点取白名单字段，整份 state 永不外递（见 parsers/openhands.mjs）
     else if (b.kind === 'openhands') scanOpenhands(agent, b.list);
+    // commandcode（Command Code）：~/.commandcode/projects/<cwd 转义>/<会话 uuid>.jsonl 追加式转录，逐行 off 增量续读。
+    // 用量挂在**行顶层**（不像 claude 在 message.usage），⚠️ inputTokens **含**缓存 ⇒ tin = input − cacheRead；
+    // 轮时间取 message.meta.createdAt（行级 timestamp 在同一请求组内 user 与 assistant 完全相同，算时长恒 0）
+    else if (b.kind === 'commandcode') scanCommandcode(agent, b.list, onlyFile);
     // crush（Charm 的终端 agent）：**每个项目一份** .crush/crush.db，按数据目录的 projects.json 展开逐个扫；
     // 一条 assistant 消息 = 一次调用，parts 里带 text/reasoning/tool_call/finish，工具返回是 role='tool'。
     // ⚠️ 库里没有逐轮 token（sessions 那两个数是「最后一次请求」的快照），故 tin/tout 如实记 0（见 parsers/crush.mjs）
@@ -2159,6 +2170,9 @@ function entryContent(id, full) {
     if (src.kind === 'goose') return gooseEntryContent(src, full);
     // openhands：一事件一文件、事件不可变 ⇒ 详情按该轮的事件文件现读（同 buddyext 的「一物一文件」路数）
     if (src.kind === 'openhands') return openhandsEntryContent(src, full);
+    // commandcode：同 pi / droid —— 重读转录按 src.turn 过滤，工具结果按 tool_use_id 回填；
+    // ⚠️ 逐次 usage 在行顶层，且**源头没有工具失败字段**（tool_result 只有 content/tool_use_id）⇒ error 一律 null
+    if (src.kind === 'commandcode') return commandcodeEntryContent(src, full);
     // crush：同 devindb / traedb —— 整轮已在扫描时并进内存，直接读（源是 SQLite，重读没有意义）
     if (src.kind === 'crush') return crushEntryContent(src, full);
     // tracecode / tracework：详情从 renderer.log 重解析指定 sessionId 的全部事件
@@ -2178,7 +2192,9 @@ function entryContent(id, full) {
 // 解析结果（entryContent）仍是完整、可信的。绝不为了「都有片段」而编造。
 // 返回：{ kind, file, extractable, lines|null, note }。lines 是**原始文本行数组**（trim 后非空、未解析），
 // 下标与磁盘行号对齐（1-based 行号 = 下标+1），复现时直接 cp 这一段即可。
-const REPRO_JSONL_KINDS = new Set(['claude', 'codex', 'buddyjsonl', 'doubao', 'minimax', 'kimi', 'copilot', 'generic-jsonl', 'openclaw', 'pi', 'qwen', 'droid']);
+const REPRO_JSONL_KINDS = new Set(['claude', 'codex', 'buddyjsonl', 'doubao', 'minimax', 'kimi', 'copilot', 'generic-jsonl', 'openclaw', 'pi', 'qwen', 'droid',
+  // commandcode：追加式逐行 jsonl，复现包按「开轮行」切区间 ⇒ 必须进这个集合并在 isTurnStart 里登记同一份判据
+  'commandcode']);
 function reproRaw(src, e) {
   const out = { kind: src.kind, file: src.file || null, extractable: false, lines: null, note: '' };
   const fstate = files.get(src.file);
@@ -2273,6 +2289,9 @@ function isTurnStart(kind, j, e) {
   // droid：开轮行 = type:"message" 且 droidIsUserPrompt —— 判据必须走解析器那份（role:"user" 之外还要
   // 挡掉带 visibility 的注入行、以及同样挂 role:"user" 的 tool_result 行），在这里另写一遍就会与条目 src.turn 错位。
   if (kind === 'droid') return j.type === 'message' && droidIsUserPrompt(j.message);
+  // commandcode：判据必须走解析器那份 —— 工具回执与产品写回的错误文案**都挂 role:"user"**
+  // （靠 meta.source 区分 tool / 缺失），在这里另写一遍就会与条目 src.turn 错位。
+  if (kind === 'commandcode') return commandcodeIsTurnStart(j);
   if (kind === 'kimi') return j.type === 'turn.prompt';
   if (kind === 'copilot') return j.type === 'user.message' && copilotTurnStart(j);
   if (kind === 'generic-jsonl') {
@@ -3018,7 +3037,10 @@ const TOOL_FAIL_TIERS = {
     // openhands：ObservationEvent.observation.is_error 逐项标失败（exit_code 一并带出），不染红整轮
     'openhands']),
   noDetail: new Set(['cursor', 'codearts']),
-  noFlag: new Set(['codex', 'tracecode', 'tracework', 'generic-jsonl']),
+  noFlag: new Set(['codex', 'tracecode', 'tracework', 'generic-jsonl',
+    // commandcode：tool_result 只有 {content,tool_use_id,type}，**结构上没有失败位**（本机 20 个块全如此）；
+    // 命令失败写在文本里（本机见 "Exit code: 255" 前缀 + GBK 乱码），从产品文本猜状态不是判据 ⇒ 置 null 不印 0
+    'commandcode']),
 };
 // I13：哪些 kind 的详情**额外**带得出超时 / 软失败的结构化标志（转录里的 `toolUseResult`）。
 // 与 TOOL_FAIL_TIERS 同一类东西 —— 一份**能力声明**，接新 agent 改这里一行。

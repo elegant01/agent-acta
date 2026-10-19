@@ -14,6 +14,7 @@ import { piTranscripts } from './pi.mjs';
 import { droidTranscripts } from './droid.mjs';
 import { gooseDbFrom } from './goose.mjs';
 import { openhandsConversation } from './openhands.mjs';
+import { commandcodeProjectsRoot } from './commandcode.mjs';
 import { qwenProjectsRoot } from './qwen.mjs';
 import { crushRoot, crushDataDir } from './crush.mjs';
 import { CODEARTS_DOER_ONLY_TABLES, codeartsDoerDbFile } from './codeartsdb.mjs';
@@ -1254,6 +1255,17 @@ export function sniffBase(base) {
   // 判据是**内容**（首行须同时带 sessionId 与 provenance），名字猜错不会误接邻居的数据。
   // ⚠️ sessions 存的是 **projects 根**（可被 QWEN_HOME / QWEN_RUNTIME_DIR 挪走）⇒ 主文件记进 ROOT_SESSIONS_AGENTS。
   { const qw = qwenProjectsRoot(base); if (qw) return { kind: 'qwen', sessions: qw, traces: null }; }
+  // commandcode（Command Code CLI，npm 包 command-code，Windows bin 叫 cmdc）：真源是
+  // <home>/.commandcode/projects/<cwd 转义>/<会话 uuid>.jsonl（同目录旁挂 .checkpoints.jsonl / .meta.json）。
+  // ⚠️ **必须排在 hasClaudeJsonl（下面 1300 行附近）与 `basename==='projects'`→claude 那条兜底之前**：
+  //   它的目录摆法与 claude 一模一样（projects/<slug>/*.jsonl），而 hasClaudeJsonl **只看有没有 .jsonl、不认内容**，
+  //   慢一步就会被 claude 接走 ⇒ 0 条且静默（cursor / buddy 当初排在它后面就是因为同一条兜底）。
+  //   判据是**内容**（首行须是 {type:"session",version,id,cwd}），名字猜错不会误接邻居的数据。
+  // 落盘目录名与 kind 同名（`.commandcode`）⇒ basesFor 那条 `~/.<name>` 自动铺上，不需要 NAME_ALIASES；
+  // 会话根**没有环境变量入口**（包里只翻到 COMMAND_CODE_RIPGREP_PATH，没有改写持久化目录的那一条，同 openhands）。
+  // ⚠️ sessions 存的是 **projects 根本身** ⇒ 主文件把 commandcode 记进 ROOT_SESSIONS_AGENTS，
+  //   否则 dirname 爬到 ~/.commandcode 会撞上一堆 json 配置（其中 providers.json 可能嵌网关凭证）。
+  { const cc = commandcodeProjectsRoot(base); if (cc) return { kind: 'commandcode', sessions: cc, traces: null }; }
   // crush（Charm 的终端 agent）：**每个项目一份** <cwd>/.crush/crush.db，数据目录只有 projects.json 那份索引。
   // 必须抢在 isDir 兜底之前：手工填 %LOCALAPPDATA%\crush 或某个项目目录时，兜底那条条都接不住 → 0 条静默。
   // 判据是**库内容**（sqlite 页头 + messages 表带 parts 与 is_summary_message 两列），与 opencode 家族

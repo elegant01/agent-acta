@@ -79,6 +79,10 @@ export const OFF_KINDS = new Set(['jsonl', 'claude', 'buddyjsonl', 'codearts', '
   // droid（Factory Droid CLI）：~/.factory/sessions/<cwd 转义>/<会话 id>.jsonl 是追加式会话转录，
   // 逐行 off 续读语义与 pi / openclaw 一致 —— 但**行内没有 usage**，逐轮 token 走不通（口径见 parsers/droid.mjs）。
   'droid',
+  // commandcode（Command Code）：~/.commandcode/projects/<cwd 转义>/<会话 uuid>.jsonl 是追加式会话转录，
+  // 逐行 off 续读语义与 claude / pi 完全一致 —— 差别在**用量挂在行顶层**（`j.usage`，不是 `j.message.usage`），
+  // 且 `inputTokens` 已含缓存命中（goose 那一档），拆分口径见 parsers/commandcode.mjs 头。
+  'commandcode',
   // generic-jsonl（R18）：声明式接入的 claude 同族逐行 jsonl，逐行 off 续读语义与 claude 完全一致。
   // 它的「**rules** 口径」版本不按 kind 走、按 **agent 走**（同一 kind 下每个 agent 的 rules 可以
   // 各不相同），版本号 rulesRev / 指纹 rulesHash 随 config 一起落盘，由主文件在 loadIndex 恢复时
@@ -300,7 +304,28 @@ export const OFF_KINDS = new Set(['jsonl', 'claude', 'buddyjsonl', 'codearts', '
 //                失败只逐项认 `observation.is_error`（详情 tools[].error + exit_code），不染红整轮，
 //                `security_risk` 不是失败信号。⚠️ 凭证红线：`base_state.json` 里嵌 `agent.llm.api_key` 明文，
 //                解析器只点取白名单字段（stats/workspace/execution_status/model），整份 state 永不外递。
-export const PARSER_REV = { jsonl: 2, buddyjsonl: 5, claude: 14, kimi: 4, codex: 3, copilot: 1, codearts: 3, tracecode: 4, tracework: 4, doubao: 8, minimax: 2, 'generic-jsonl': 1, openclaw: 1, mimocode: 1, kilo: 1, comate: 2, cline: 1, buddyext: 1, pi: 1, codeartsdb: 1, qwen: 1, crush: 1, droid: 1, goose: 1, openhands: 1 };
+// commandcode:1 —— 首次接入（2026-10-19，**进 OFF_KINDS**：projects/<cwd 转义>/<uuid>.jsonl 逐行 off 续读）。
+//             一上来钉死、以后动必须 +1 的五条（真件实测 14 份会话，见 parsers/commandcode.mjs 头）：
+//             ① 开轮 = `message.meta.source === "user"` 且有非空 text 块 —— 工具回执**也挂 role:"user"**
+//                （source:"tool"，本机 13 行），照 role 数轮会虚增约一倍；第三种行 meta 只有 messageId
+//                （产品写回的 "Authentication failed…" 错误文案，本机 5 行）既非真人也非工具 ⇒ 不开轮。
+//                所以一次失败运行的会话只剩「一问无答」那 1 条，三桶与 calls 如实全 0（不是整份不出现，
+//                也不是拿错误文案凑一轮正文）；
+//             ② **`usage.inputTokens` 已含缓存命中**（goose/codebuddy/cline 同档）⇒ `tin = input − cacheRead`、
+//                `tcache = cacheRead`、`ctxUsed = input`，不得叠加。自证：同会话逐次 input 18988→20607→…→25327
+//                就是上下文全长，若 input 不含缓存则上一条 19.3k、下一条 39.9k，一轮内翻倍不可能；
+//                用量挂在**行顶层**（`j.usage`），照抄 claude 的 `j.message.usage` 会整排 0；
+//             ③ 轮时间取 `message.meta.createdAt`（毫秒）—— 行级 `timestamp` 在同一次请求组内 user 与 assistant
+//                **完全相同**，拿它算时长恒为 0；⚠️ tool 行的 meta **没有 createdAt**（13/13）⇒ 轮末只取到最后一条
+//                assistant；两个时钟会互相矛盾（某行 ts 比 createdAt 晚 87s）⇒ 全站按 createdAt、行级只兜底；
+//             ④ **源头没有工具失败信号**：tool_result 只有 {content,tool_use_id,type}，命令失败写在文本里
+//                （本机见 "Exit code: 255"）⇒ status 一律 ok、aborted 一律 false，不拿产品文本猜状态；
+//                `calls` = 按行 id 去重后带 usage 的 assistant 行数（与 .meta.json 的 traceIds 对齐，
+//                但 traceIds **含失败调用** ⇒ 只配当校验、不能当数据源）；
+//             ⑤ 会话名没有源头（三种行里没有 title 一类）⇒ name 如实 null；模型名是 provider 限定名
+//                （`4399bot/claude-dsv41fv[1m]`）照原样进 models，ctx 分母**不读 providers.json**（那是用户的
+//                网关配置、baseURL 可能嵌凭证，且跨机器不一致）⇒ windowOf 认不出即 0，页面按「只显占用不画进度条」兜底。
+export const PARSER_REV = { jsonl: 2, buddyjsonl: 5, claude: 14, kimi: 4, codex: 3, copilot: 1, codearts: 3, tracecode: 4, tracework: 4, doubao: 8, minimax: 2, 'generic-jsonl': 1, openclaw: 1, mimocode: 1, kilo: 1, comate: 2, cline: 1, buddyext: 1, pi: 1, codeartsdb: 1, qwen: 1, crush: 1, droid: 1, goose: 1, openhands: 1, commandcode: 1 };
 
 // index 落盘由主文件负责（IO 与调度都在那边）；解析器只报「哪个 kind 脏了」。
 // 主文件启动时调 setSaveHook 把落盘登记函数注入进来 —— 避免反向 import 主文件。

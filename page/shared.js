@@ -36,7 +36,7 @@
 // 品牌色 / 品牌图标映射（图标来自 @lobehub/icons 静态 SVG，已本地化到 /vendor/svg/）
 const AGENT_COLORS = { atomcode: '#3b74e7', codebuddy: '#18a058', 'codebuddy-ext': '#18a058', workbuddy: '#7c5cd6', claude: '#d97757', zcode: '#0e9aa7' };
 const PALETTE = ['#3b74e7', '#18a058', '#7c5cd6', '#c26a1b', '#c2185b', '#0e9aa7', '#795548'];
-const AGENT_ICONS = { atomcode: 'logo-AtomGit-G-red.svg', claude: 'claudecode-color.svg', codebuddy: 'codebuddy-color.svg', 'codebuddy-ext': 'codebuddy-color.svg', workbuddy: 'workbuddy-color.svg', trae: 'trae-color.svg', traework: 'traework-v2.svg', cursor: 'cursor.svg', codex: 'codex-color.svg', opencode: 'opencode.svg', kilo: 'kilocode.svg', openclaw: 'openclaw-color.svg', cline: 'cline.svg', qoder: 'qoder-color.svg', 'qoder-cn': 'qoder-color.svg', codeart: 'huawei-color.svg', codearts: 'huawei-color.svg', gemini: 'gemini-color.svg', kimi: 'kimi.svg', 'zcode': 'zai.svg', 'dsh': 'deepseek-harness-whale.svg', hermes: 'hermesagent.svg', devin: 'windsurf.svg', qwen: 'qwen-color.svg', doubao: 'doubao-color.svg', hunyuan: 'hunyuan-color.svg', grok: 'grok.svg', copilot: 'copilot.svg', windsurf: 'windsurf.svg', minimax: 'minimax-code-logo.svg', mimocode: 'mimo.svg', pi: 'pi.svg', crush: 'crush-color.svg', droid: 'droid.svg', goose: 'goose.svg', openhands: 'openhands.svg' };
+const AGENT_ICONS = { atomcode: 'logo-AtomGit-G-red.svg', claude: 'claudecode-color.svg', codebuddy: 'codebuddy-color.svg', 'codebuddy-ext': 'codebuddy-color.svg', workbuddy: 'workbuddy-color.svg', trae: 'trae-color.svg', traework: 'traework-v2.svg', cursor: 'cursor.svg', codex: 'codex-color.svg', opencode: 'opencode.svg', kilo: 'kilocode.svg', openclaw: 'openclaw-color.svg', cline: 'cline.svg', qoder: 'qoder-color.svg', 'qoder-cn': 'qoder-color.svg', codeart: 'huawei-color.svg', codearts: 'huawei-color.svg', gemini: 'gemini-color.svg', kimi: 'kimi.svg', 'zcode': 'zai.svg', 'dsh': 'deepseek-harness-whale.svg', hermes: 'hermesagent.svg', devin: 'windsurf.svg', qwen: 'qwen-color.svg', doubao: 'doubao-color.svg', hunyuan: 'hunyuan-color.svg', grok: 'grok.svg', copilot: 'copilot.svg', windsurf: 'windsurf.svg', minimax: 'minimax-code-logo.svg', mimocode: 'mimo.svg', pi: 'pi.svg', crush: 'crush-color.svg', droid: 'droid.svg', goose: 'goose.svg', openhands: 'openhands.svg', commandcode: 'commandcode.svg' };
 // R16 遗留子项：只有图标、后端零检测的名字 —— 不会自动发现、没有解析器。
 // 用户在「添加 agent」里敲这些名字时会误以为能自动识别，必须明示（口径与需求书 R16 一致）。
 // doubao 已有解析器（R26）、hermes 已于 2026-09-21 接入（state.db SQLite + agent.log 辅源）、
@@ -71,6 +71,9 @@ const MODEL_ICONS = [
   ['wenxin', 'wenxin-color.svg'], ['ernie', 'wenxin-color.svg'],
   ['mimo', 'xiaomimimo.svg'],
   ['yuanbao', 'yuanbao-color.svg'], ['bytedance', 'bytedance-color.svg'], ['pangu', 'huawei-color.svg'],
+  // 硅基流动系「组织/模型」ID（deepseek-ai/…、meta-llama/…、google/gemma-…）：斜杠前缀会把前缀表
+  // 的裸名条目（llama）吞掉，子串层补上；gemma 无官方独立图标，借 Google 彩色 G
+  ['llama', 'meta-color.svg'], ['gemma', 'google-color.svg'],
   ['mai-code', 'copilot.svg'],
 ];
 
@@ -259,6 +262,7 @@ const MODEL_PREFIX_ICONS = [
   ['openrouter', 'openrouter-color.svg'],
   ['doubao', 'doubao-color.svg'], ['seed', 'doubao-color.svg'], // seedance/seed1.6 等字节系→豆包
   ['hy', 'hunyuan-color.svg'], ['hunyuan', 'hunyuan-color.svg'],
+  ['tencent/hy', 'hunyuan-color.svg'], // 硅基流动系带组织前缀的混元简写 ID（tencent/hy3-preview / hy4-preview）
   ['kimi', 'kimi.svg'], ['moonshot', 'moonshot.svg'],
   ['gemini', 'gemini-color.svg'],
   ['grok', 'grok.svg'],

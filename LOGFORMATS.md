@@ -29,6 +29,7 @@
 | droid（Factory Droid CLI） | `<home>/.factory/sessions/<cwd 转义>/<会话 id>.jsonl`（`FACTORY_HOME_OVERRIDE` / `FACTORY_PROFILE_DIR` 可整棵挪走 ⇒ index 里存的是**会话根**；`~/.factory/logs\|state\|droids\|prem-auth\|cache` 那些兄弟目录都不是会话源） | 追加式逐行 JSON：首行 `session_start`（`id/title/owner/version/cwd/hostId`）→ `message`（Anthropic 形状：assistant 的 `content[]` 里是 `thinking`/`text`/`tool_use`，**工具返回挂 `role:"user"` 的 `tool_result` 块**）→ 每轮末一条 `agent_turn_outcome`（只有 `turnId/reason/resultKind`）。同名 `.settings.json` 是会话账本（**整份重写 + 留 `.bak`**） | 轮（`role:"user"` **且没有 `visibility` 字段** 且有非空 `text` 块 —— ⚠️ droid 把自己的告警写成 `visibility:"both"`、把 `<system-reminder>` 群写成 `visibility:"llm_only"`，两者都是 `role:"user"`；`tool_result` 行也没有 `visibility`，靠「有 text 块」挡住） | ✅ 行级 `timestamp`（**ISO 字符串**，不是毫秒数）；轮级 = 下一轮时间差（末轮 0），会话工作时长取 `.settings.json.assistantActiveTimeMs` | ⚠️ **逐轮 token 源头不可得** ⇒ 每轮 `tin/tout/tcache/total/ctx/ctxUsed` 如实 0（crush / doubao 那一档）。源里只有 `.settings.json` 的 `tokenUsage`（会话累计，含 `factoryCredits`）与 `lastCallTokenUsage`（**末次调用快照、每轮被覆写**）⇒ 两个数只在详情 callsNote 里如实给，不摊到轮上；`models` 取 assistant 的 `modelId`（custom 模型形如 `custom:<displayName  slug 化>-0`）；失败 = `tool_result.is_error` **只逐项**（真件里一轮两条试错后接成功回复，染红整轮就是假警报），轮级 `status` 一律 ok、`aborted` 一律 false（`agent_turn_outcome.reason` 值域未明，不猜）；`ctx` 恒 0（源里没有窗口容量）。⚠️ 枚举只认 `*.jsonl`，写成 `*.json*` 会把 `.settings.json.bak` 当第二份会话、条数翻倍 |
 | goose（Block Goose） | `<root>/data/sessions/sessions.db`（**文件型 kind，index 里存的是 db 路径**；Windows 真路径 = `%APPDATA%\Block\goose`，POSIX 才是 `~/.local/share/goose` —— 第三方落盘表在 Windows 上给的那条本机实测不存在；`GOOSE_PATH_ROOT` 可整棵挪走，`goose info` 会把它自己算出的三条路径打出来） | SQLite（**WAL**）：`sessions` / `messages` / `usage_ledger` / `schema_version` / `provider_inventory_*`。判据必须带**列**（`messages.content_json` + `metadata_json` + `session_id`）—— 别家的表也叫 `messages`（opencode / kilo / crush 全姓这个） | 轮（`role=user` **且 `metadata.userVisible!==false`** 且有非空 text 块 —— ⚠️ `<turn-context>` 注入行是 `userVisible:false`+`turnContext:true`，**工具返回也挂 `role:user`**（块是 `toolResponse`、没有 text）） | ✅ 逐次 `usage.elapsedMs` 与 `timeToFirstTokenMs` 都在（TTFT 有源，qwen 那一档）；轮级 = 下一轮时间差（末轮取本轮 elapsedMs） | ✅ assistant 行的 `metadata_json.usage`（⚠️ **`inputTokens` 含缓存**，与 qwen/cline/buddyext 同侧 ⇒ `tin = input − cacheRead`、`tcache = cacheRead`、`ctxUsed = input`；`cacheReadTokens` 是**缺键**不是 0）；`ctx` 分母 = `sessions.model_config_json.max_tokens`（本机 128000，不用查表）；⚠️ **命名反向陷阱**：`sessions.input_tokens` 那组裸名列实测是**最后一次请求的快照**，带前缀的 `sessions.accumulated_*` 才是会话累计（对账：accumulated_input 76638 == Σ usage_ledger.input_tokens == Σ assistant 行 inputTokens，三源一字不差）；工具块叫 `toolRequest`（挂 assistant 行）/ `toolResponse`（挂 user 行）、配对键是块上的 `id`；压缩走 `usage_ledger.is_compaction`；`messages.tokens` 那一列本机恒 null，别读 |
 | openhands（OpenHands V1） | `<home>/.openhands/conversations/<会话 uuid>/`（会话根**没有环境变量入口**，包里只翻到 `OPENHANDS_SUPPRESS_BANNER/PROJECT_DIR/SESSION_ID` 这些） | ⚠️ **一事件一文件**：`events/event-<NNNNN>-<uuid>.json`（`NNNNN` 是全局递增序号，文件名排序即事件顺序），kind ∈ `SystemPromptEvent` / `MessageEvent` / `ActionEvent` / `ObservationEvent`；同目录 `base_state.json` 是会话账本。**`base_state.json` 里嵌 `agent.llm.api_key` 明文**（`~/.openhands/agent_settings.json` 整份也是密钥与网关）⇒ 解析器只点取白名单字段（`stats` / `workspace` / `execution_status` / `agent.llm.model`），整份 state 永不外递、不进详情、不进搜索分片 | 轮（`kind:"MessageEvent"` 且 `source==="user"` 且有非空 text —— 这一家**没有注入行**：真件 4 条 user 全是真人打的，带 `extended_content`+`activated_skills` 的那条也算；工具返回不挂 user，它在 `ObservationEvent` 里 `source:"environment"`） | ✅ 行级 `timestamp` 是**不带时区的本地时间**（`2026-10-14T11:19:45.837188`）⇒ 按本地解析，别当 UTC；轮级 = 下一轮时间差（末轮取本轮末事件时间） | ⚠️ **逐轮 token 源头不可得**：事件对象里没有任何 usage 字段 ⇒ 每轮 tin/tout/tcache/total 如实 0（droid 那一档）。账本在 `base_state.stats.usage_to_metrics.<来源>`：`accumulated_token_usage{prompt,completion,cache_read,cache_write,reasoning,**context_window**,per_turn_token}` + `accumulated_cost`（本机 122188/3001、cost 0.010528）⇒ 只进 note 不摊轮；`per_turn_token` 语义未明 ⇒ 照抄不参与计算。**唯一的白送是 ctx 分母**：`context_window`（本机 922000）照实填 `entry.ctx`，分子没有 ⇒ `ctxUsed` 留 0；`calls` = 该轮去重后的 `llm_response_id` 数（并行工具调用共享一个 id，数事件会翻倍）、`tools` = ActionEvent 条数；失败 = `observation.is_error` **逐项**（另带 `exit_code`），`security_risk` 不是失败信号 |
+| commandcode（Command Code CLI） | `<home>/.commandcode/projects/<cwd 转义>/<会话 uuid>.jsonl`（会话根**没有环境变量入口**，`.` + 名字的默认约定直接命中；旁挂 `<uuid>.checkpoints.jsonl` / `<uuid>.meta.json` 都不是会话源 ⇒ 枚举显式排除 checkpoints） | 追加式 JSONL，行只有三种：`session`（带真 `cwd`）/ `message`（`message{role,content[],meta{source,createdAt?,messageId}}`）/ 带**行顶层** `usage` + `model` 的 assistant 行 | 轮（`meta.source==="user"` 且有非空 text —— ⚠️ **工具回执也挂 `role:"user"`**（source:`tool`），产品写回的错误文案行只有 messageId 没有 source，两者都不开轮） | ⚠️ 行级 `timestamp` 在同一次请求组内 user 与 assistant **完全相同** ⇒ 轮时间只能取 `message.meta.createdAt`；tool 行没有 createdAt ⇒ 轮末只取到去重后的 assistant 行 | ✅ 逐次 `usage{inputTokens,outputTokens,cacheReadTokens,cacheWriteTokens}`（⚠️ **`inputTokens` 含缓存** ⇒ `tin = input − cacheRead`、`tcache = cacheRead`、`ctxUsed = input`；`cacheWrite` 恒 0、`cacheRead` 会中途归零再涨，是网关合成的）；`ctx` 无分母（**不读 providers.json**）⇒ 认不出即 0；⚠️ **源头没有工具失败字段**（tool_result 只有 content/tool_use_id）⇒ status 恒 ok、逐项 error 一律 null；`calls` = 带 usage 的行数按行 id 去重；会话名没有源头 ⇒ `name` 恒 null |
 | trace（其它走 span 的 agent） | `<base>/sessions` + `<base>/traces` | span 模型 | 每次 Agent workflow | ✅ 现成 duration | ✅ modelInfo 汇总 |
 | zcode（ZCode CLI） | `~/.zcode/cli/db/db.sqlite`（WAL 模式的 SQLite 库，**不是文件树**） | `session` / `message`(data JSON) / `part`(data JSON) / `session_input` / `tool_usage` / `model_usage` / `turn_usage` 七张表 | 轮（role=user 的 message 开轮，与 `turn_usage.user_message_id` 天然对齐） | ✅ `turn_usage` / `model_usage` / `tool_usage` 的真实起止时间（含 TTFT=`first_token_at−started_at`） | ✅ `turn_usage` 轮级账（缺行回退 `model_usage` 求和）；上下文占用 = 最后一次调用的 input+cache |
 | opencode（OpenCode CLI/桌面） | `~/.local/share/opencode/opencode.db`（**明文** SQLite + WAL，不需要密钥/解密） | `session` / `message`(data JSON) / `part`(data JSON) + `event`·`event_sequence`（事件投影，不作第二数据源） | 轮（role=user 的 message 开轮；其后每条 assistant message = 一次 LLM 调用） | ✅ 消息 `time.created/completed` 差值；工具取 `state.time.{start,end}` | ✅ 每条 assistant message 的 `tokens`（input/output/reasoning/cache）逐次求和；上下文占用 = 最后一次调用的 input+cache |
@@ -800,6 +801,39 @@ claude 省事的地方 —— 取不到就是 0，页面退化成只显示占用
 ④ `timestamp` 不带时区 ⇒ 按本地时间解析；失败只逐项认 `observation.is_error`（另带 `exit_code`），不染红整轮。
 
 回归见 `test/openhands-test.mjs`（A/B/C/D/G，含「会话目录没事件文件不认领」的反证与凭证 canary）。
+
+## commandcode（Command Code CLI，2026-10-19 接入）
+
+> 装法是 `npm i -g command-code`（bin 四个别名 `cmd` / `cmdc` / `commandcode` / `command-code`，Windows 上**别用 `cmd`** ——
+> 它会抢在 System32 的 cmd.exe 前面）。⚠️ 第三方落盘索引表说的 `~/.commandcode/projects/**/*.jsonl` **位置对、形状骗人**：
+> 那是 claude 的摆法，真件却是 **opencode 式的 `session`/`message` 行 + 行顶层 usage**（照 claude 解析器搬会整排 0）。
+> 跑起来的两个前提（与解析无关，但同事会问）：账号闸门只看 `COMMAND_CODE_API_KEY` 或 `~/.commandcode/auth.json` 的 `apiKey` 是否非空；
+> 裸跑还必须让默认模型落在 BYOK 上（`~/.commandcode/config.json` 的 `model`），否则会 fall through 到它自家 catalog、报一句假「API key invalid」。
+
+**主源**：`~/.commandcode/projects/<cwd 转义>/<会话 uuid>.jsonl`，逐行追加 ⇒ **进 `OFF_KINDS`**（`PARSER_REV.commandcode = 1`）。
+同目录旁挂 `<uuid>.checkpoints.jsonl`（逐轮快照，本机只在首轮一行、`files:0`）与 `<uuid>.meta.json`（print 载体给 `entrypoint`、TUI 给 `traceIds`）——
+两个都不是会话源，枚举必须显式排除 `.checkpoints.jsonl`，否则条数翻倍（droid 的 `.bak` 同型坑）。
+
+**五条钉死的口径**（`PARSER_REV.commandcode` 守着，逐条实测来源见 `parsers/commandcode.mjs` 头）：
+① 开轮 = `message.meta.source === "user"` + 有非空 text。工具回执**也挂 `role:"user"`**（source:`tool`），产品写回的错误文案行只有 `messageId` 没有 source ⇒ 都不开轮；
+   所以一次失败运行的会话只剩「一问无答」那 1 条，三桶与 calls 如实全 0；
+② **`usage.inputTokens` 已含缓存命中**（goose / codebuddy / cline 同侧）⇒ `tin = input − cacheRead`、`tcache = cacheRead`、`ctxUsed = input`。
+   自证：同会话逐次 input 18988→20607→…→25327 就是上下文全长，若 input 不含缓存则一轮之内上下文翻倍，不可能；
+   `cacheWrite` 恒 0、`cacheRead` 会中途归零再涨（网关合成的，单列展示即可）。**用量在行顶层**，不在 `message.usage`；
+③ 轮时间取 `message.meta.createdAt`（毫秒）—— 行级 `timestamp` 在同一请求组内 user 与 assistant 完全相同，拿它算时长恒为 0；
+   ⚠️ tool 行的 meta **没有 createdAt** ⇒ 轮末只取到去重后的 assistant 行（两个时钟还会互相矛盾，本机见过差 87s）；
+④ **源头没有工具失败信号**：`tool_result` 只有 `{content, tool_use_id, type}`，命令失败写在文本里（本机见 `Exit code: 255`）
+   ⇒ status 一律 ok、详情 `tools[].error` 一律 null，`TOOL_FAIL_TIERS.noFlag` 记这一档（不拿产品文本猜状态）；
+⑤ 会话名没有源头（三种行里没有 title 一类）⇒ `name` 恒 null；模型是 provider 限定名（`4399bot/claude-dsv41fv[1m]`）原样进 `models`；
+   ctx 分母**不读 `providers.json`**（那是用户的网关配置、`baseURL` 可能嵌凭证，且跨机器不一致）⇒ `windowOf` 认不出即 0。
+
+⚠️ **凭证红线**：`~/.commandcode/providers.json` 里是网关 `baseURL` 与 key 引用（`apiKey` 只收 `$ENV` / `{env:VAR}` / `!command`，明文会被产品拒收），
+`auth.json` 是账号与 provider key 的落点 —— 解析器**一个都不读**，`test/commandcode-test.mjs` 的 G 段用 canary 钉住。
+
+`calls` = 带 usage 的行数按行 id 去重（续写行不重复计、也不推进轮末）。`.meta.json` 的 `traceIds` 条数与 assistant 行数对齐（那条真会话 6=6），
+但 traceIds **含失败调用**（失败会话 traceIds=1 而 assistant=0）⇒ 只配当校验，不能当数据源。
+
+回归见 `test/commandcode-test.mjs`（A/B/C/D/D2/F/G，含「claude 同形状目录不被认成 commandcode」「空 projects 不认领」「抹掉 data.turns 就补不回来」三件反证与凭证 canary）。
 
 ## cursor（Cursor IDE 的 Agent 转录）
 
