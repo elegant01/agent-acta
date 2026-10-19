@@ -1,0 +1,58 @@
+name: Publish Package
+
+# 发布 npm 包到 GitHub Packages。
+#
+# 这个仓库是 npm 包 @yxzpro/agent-acta 的公开镜像（无构建、无依赖，仓库内容
+# 就是发布内容），所以 CI 只做校验 + 发布，不跑 install/build。
+#
+# GitHub Packages 要求 npm 包的 scope 与仓库 owner 一致，因此发布前会临时把
+# 包名改成 @elegant01/agent-acta；仓库源码里的 @yxzpro/agent-acta 保持不变。
+#
+# 触发：发布 GitHub Release（打 tag 发布 release）或手动 workflow_dispatch。
+# 注意：每次发布要把 package.json 的 version 改成新版本，GitHub Packages
+# 不接受重复版本号。
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  # 必须与 GitHub 用户名一致；仅用于 GitHub Packages 上传时的临时改名。
+  NPM_SCOPE: '@elegant01'
+
+jobs:
+  verify:
+    name: Verify package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Syntax check entry files
+        run: |
+          node --check agent-acta-server.mjs
+          node --check mcp-server.mjs
+      - name: Check tarball contents
+        run: npm pack --dry-run
+
+  publish-github-packages:
+    name: Publish to GitHub Packages
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: ${{ env.NPM_SCOPE }}
+      - name: Retag as scoped package for GitHub Packages
+        run: npm pkg set name="$NPM_SCOPE/agent-acta"
+      - name: Publish
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
