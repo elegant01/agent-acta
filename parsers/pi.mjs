@@ -98,9 +98,16 @@ export function piTranscripts(base) {
 
 // root = 会话根（下面每个 `--<cwd 编码>--` 一个项目）。项目目录最多认 200 个、每个 400 份，
 // 只为「别在嗅探上失控」，不是产品上限。
+// ⚠️ 项目目录必须 `--…--` 包裹：Command Code 是 pi 系 fork，首行 {type:session,version,id,cwd}
+// 与 pi **完全一样**，内容判据分不开两家；结构上的区别是 commandcode 的 slug 目录不包双横线
+// （c-users-4399，sidecar 也未必齐 —— 进行中的会话还没有 .meta.json）。不认这条的话 discovery 里
+// pi 排在 commandcode 前面，会把 ~/.commandcode/projects 抢成 pi，ownConfFor 下轮又拽回
+// commandcode —— kind 每轮翻转、条目整批删了加（2026-10-20 实测病征：悬浮卡片条目原地 churn）。
+// 运行时 scanPi 不需要这道：嗅探过了才轮得到扫。
 function scanTranscriptFiles(root) {
   const out = [];
   for (const dn of (listDirCached(root) || []).slice(0, 200)) {
+    if (!(dn.startsWith('--') && dn.endsWith('--'))) continue;   // pi 的 cwd 编码目录约定，见上
     const projDir = path.join(root, dn);
     if (!isDir(projDir)) continue;
     for (const fn of (listDirCached(projDir) || []).slice(0, 400)) {

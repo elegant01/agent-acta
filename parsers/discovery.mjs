@@ -1226,6 +1226,10 @@ export function sniffBase(base) {
   // ⚠️ sessions 存的是**会话根本身**（那一层可被 PI_CODING_AGENT_SESSION_DIR / settings.sessionDir
   //    改名挪走，不能再靠 join('sessions') 拼），所以主文件把 pi 记进了 ROOT_SESSIONS_AGENTS。
   { const pp = piTranscripts(base); if (pp) return { kind: 'pi', sessions: pp.root, traces: null }; }
+  // ⚠️ Command Code 是 pi 系 fork：首行 {type:session,version,id,cwd} 与 pi 完全一样，纯内容判据分不开
+  //    —— 而 pi 排在前，re-sniff ~/.commandcode/projects 会被 pi 抢走，ownConfFor 下轮又拽回 commandcode，
+  //    kind 每轮翻转、条目整批删了加（2026-10-20 实测）。区分落在 pi.mjs 的目录约定守卫：
+  //    pi 只认 `--…--` 包裹的项目目录，commandcode 的 slug 目录不包双横线。
   // droid（Factory Droid CLI）：真源是 <home>/.factory/sessions/<cwd 转义>/<会话 id>.jsonl。
   // 同样必须抢在 atomcode 兜底之前：手工填 ~/.factory 时，兜底看到的是「有子目录的根」，而它找的是
   // <hash>/*.jsonl|*.meta 那种摆法 → 0 条且静默（与 dsh / kimi / openclaw / cline / pi 当初同源）。

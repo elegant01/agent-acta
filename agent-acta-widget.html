@@ -18,7 +18,7 @@
    深色「毛玻璃」：Win10（19045）拿不到系统的真模糊（DWM 的 acrylic/mica 是 Win11 的东西），
    所以底是 80% 不透明的深色 —— 看着是玻璃感，实际是诚实的高透明，别在这上面堆 backdrop-filter。
    （2026-09-23 从 88% 降到 80%：用户要更透；再低白字在亮色桌面上会飘。卡片与球同皮，一起降。）
-   圆角由 #wrap 画；卡片本体不打外阴影（2026-09-21 用户要求去掉），透明留白只剩球的阴影/辉光在用。 */
+   圆角由 #wrap 画；卡片本体不打外阴影（2026-09-21 用户要求去掉），透明留白只剩球的接触影在用。 */
 html.float{--bg:rgba(9,9,11,.80); --card:rgba(255,255,255,.06); --border:rgba(255,255,255,.12);
   --border-light:rgba(255,255,255,.07); --text:#f4f4f5; --regular:#e4e4e7; --secondary:#a1a1aa;
   --placeholder:#7d8392; --primary:#7dd3fc; --green:#34d399; --red:#f87171; --orange:#fb923c;
@@ -69,11 +69,11 @@ html.float #wrap:focus-within header .winbtn,html.float #wrap:focus-within heade
    球的阴影还要它罩住（见上面那条），卡片模式留着只是同一窗口壳的代价。 */
 html.float header{padding:6px 8px}
 html.float #stats{padding:6px 8px}
-html.float .stat-big{font-size:15px;font-weight:900;text-shadow:0 0 12px rgba(255,255,255,.45)}  /* demo 的 font-black + glow-text */
+html.float .stat-big{font-size:15px;font-weight:900}   /* demo 的 font-black；glow-text 2026-10-20 退役（白字发光叠玻璃底发糊） */
 html.float .stat-sub{font-size:10.5px}
-/* 汇总区的入/出/缓数字带发光（demo 的 glow-blue / glow-amber）；缓存紫 demo 没给光，不加 */
-html.float #stats .tin{text-shadow:0 0 8px rgba(125,211,252,.55);font-weight:700}
-html.float #stats .tout{text-shadow:0 0 8px rgba(251,146,60,.55);font-weight:700}
+/* 汇总区的入/出数字不加发光（glow-blue/glow-amber 同批退役），只靠配色区分；缓存紫照旧 */
+html.float #stats .tin{font-weight:700}
+html.float #stats .tout{font-weight:700}
 html.float #stats .tcache{font-weight:700}
 html.float #feed{padding:5px 6px 16px;user-select:none}  /* 底部留位给拖拽柄；user-select:none —— 列表区整片是拖窗把手（见 JS feed 那段），不禁掉选择一拖就糊一片蓝 */
 /* 卡片布局口径对齐根目录 gemini-code demo（列表项三段式）：
@@ -98,7 +98,10 @@ html.float #wrap:hover .grip{opacity:.45}
 html.float .grip:hover{opacity:.9 !important}
 
 /* ===== 球模式（html.float.ball）：收成一颗球，只显示今日 token =====
-   2026-09-24 水球换成「暗黑发光球」（参照 gemini-code demo：纯色球底 + sky 辉光脉动 + 悬停放大）。
+   2026-10-20 第三代（参照 token-ball-demo 的纪律）：neon 发光球的渐变装饰环 + 双层呼吸辉光退役 ——
+   环要载信息（SVG 进度环，分母 = 每日预算设置项，没设退到昨日总量，皆无则不画），
+   常驻动画全拿掉，「活着」改由事件表达（token 流入时环上扫一段弧即停）。
+   （第一代水球、第二代发光球，迭代史见 git log。）
    ⚠️ 球**不用** -webkit-app-region:drag —— 那东西在 Windows 上是系统级命中测试（HTCAPTION），
    鼠标事件到不了页面，click 会被整个吞掉（2026-09-20 实测：CDP 合成事件能点、真鼠标不行）。
    拖动走 pointer 事件 + floatApi.dragBegin/dragBy（IPC 让壳挪窗口），点击与拖动按 4px 阈值分家。 */
@@ -112,48 +115,67 @@ html.float.ball{--bs:88px}
 html.float.ball header,html.float.ball #stats,html.float.ball #feed,html.float.ball .grip,html.float.ball #stale{display:none}
 /* 球的留白同卡片：12px（html.float body 那条已经给了，这里不另设）—— 阴影/辉光罩得住才不会被切平 */
 html.float.ball #wrap{background:none;border:none;box-shadow:none;overflow:visible;align-items:center;justify-content:center}
-/* 球体 = demo 的 neon-ball：实心 zinc-950 底 + sky→indigo→purple 渐变环（glass-border 同款
-   双背景技法，环宽 2px）。球比卡片更像个物件，用实心底不跟卡片的 80% 透明 —— 渐变环要实心底才压得住。
-   断连态的 .off 把渐变环换成红色；悬停放大 1.08（demo 是 1.10，88px 球在 112px 窗里 1.10 只剩 7px 边）。
+/* 球体：实心底 + 1px 细边。旧版的 sky→indigo→purple 渐变描边环是纯装饰，
+   换成下面 .ring 的 SVG 进度环 —— 装饰不能伪装成信息。
+   悬停放大 1.08（88px 球在 112px 窗里再大就只剩几 px 边）。
    入场 scale-in：卡片 ⇄ 球切换时球是「长出来」的，不是凭空闪现。 */
 html.float.ball #ball{display:flex;flex-direction:column;align-items:center;justify-content:center;
   position:relative;width:var(--bs);height:var(--bs);border-radius:50%;
   cursor:pointer;user-select:none;touch-action:none;
-  border:2px solid transparent;
-  background:linear-gradient(#09090b,#09090b) padding-box,
-    linear-gradient(135deg,#38bdf8,#6366f1 45%,#a855f7) border-box;
+  border:1px solid var(--border);
+  background:#101014;
   transition:transform .2s;
   animation:ball-in .34s cubic-bezier(.3,1.4,.5,1)}
 @keyframes ball-in{from{opacity:0;transform:scale(.55)}to{opacity:1;transform:scale(1)}}
 html.float.ball #ball:hover{transform:scale(1.08)}
-/* ⚠️ 球的阴影/辉光都不画在 #ball 上 —— 元素自身带动画/过渡时 Chromium 走合成快路径，
+/* ⚠️ 球的阴影不画在 #ball 上 —— 元素自身带动画/过渡时 Chromium 走合成快路径，
    box-shadow 会忽略 border-radius 画成方的（2026-09-20 白底实测锁定）。
-   所以挪给 #wrap 的两个圆形假影：::before 常驻接触影 + sky 辉光，::after 是 purple 辉光层 ——
-   两层同相 opacity 脉动（opacity 是合成属性，不踩上面那个坑）= demo 的 neon-glow 双色呼吸。
-   demo 原版 blur 到 25/50px，这里压到 10/12px：透明窗留白就 12px，超出的部分会被窗口边切平。
-   接触影参数不变：88px 球最外一圈 ≈ 8.3px，仍 < 12px。
+   所以挪给 #wrap 的伪元素；且它不带动画（动画元素上的阴影会踩同一个坑）。
+   常驻表现只剩这一圈接触影：旧版 sky/purple 双层呼吸辉光（glow-breathe）2026-10-20 退役，
+   桌面常驻元素一直动比静止更烦。
    background/filter 必须显式归 none —— 卡片态的弥散光晕也写在这两个伪元素上，同特异性靠后覆盖，
    不重置的话 160px 的模糊圆斑会漏到球后面。 */
 html.float.ball #wrap::before{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
   width:var(--bs);height:var(--bs);border-radius:50%;pointer-events:none;background:none;filter:none;
-  box-shadow:0 calc(var(--bs) * 3 / 116) calc(var(--bs) * 14 / 116) rgba(0,0,0,.45),
-             0 calc(var(--bs) * 1 / 116) calc(var(--bs) * 3 / 116) rgba(0,0,0,.3),
-             0 0 10px rgba(56,189,248,.5);
-  animation:glow-breathe 2.5s ease-in-out infinite}
-html.float.ball #wrap::after{content:'';position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
-  width:var(--bs);height:var(--bs);border-radius:50%;pointer-events:none;background:none;filter:none;
-  box-shadow:0 0 12px 2px rgba(168,85,247,.42);
-  animation:glow-breathe 2.5s ease-in-out infinite}
-@keyframes glow-breathe{0%,100%{opacity:.45}50%{opacity:1}}
-/* 断连：渐变环换红（background 两层一起换，padding-box 的实心底不动） */
-html.float.ball #ball.off{background:linear-gradient(#09090b,#09090b) padding-box,
-  linear-gradient(135deg,rgba(248,113,113,.9),rgba(248,113,113,.45)) border-box}
-/* 数字整块正中：水球时代要躲水线才往上提 14%，发光球没有水线。z-index 压着辉光假影。 */
+  box-shadow:0 calc(var(--bs) * 3 / 116) calc(var(--bs) * 10 / 116) rgba(0,0,0,.5),
+             0 calc(var(--bs) * 1 / 116) calc(var(--bs) * 3 / 116) rgba(0,0,0,.35)}
+html.float.ball #wrap::after{content:none}
+/* 信息环：100px 借居在 88px 球内（viewBox 100，随 --bs 等比），百分比 translate 对球心
+   —— 别写 inset:0，圆心会往右下偏 (100-88)/2=6px。环比球大出的 6px 落在 body 12px
+   透明留白里，不会被窗口边切平。pointer-events:none，不吞球的点击/拖动。 */
+#ball .ring{position:absolute;left:50%;top:50%;width:calc(var(--bs) * 100 / 88);height:calc(var(--bs) * 100 / 88);
+  pointer-events:none;transform:translate(-50%,-50%) rotate(-90deg)}
+#ball .ring-track{fill:none;stroke:rgba(255,255,255,.1);stroke-width:3}
+#ball .ring-fill{fill:none;stroke:var(--primary);stroke-width:3;stroke-linecap:round;
+  stroke-dasharray:289.03;stroke-dashoffset:289.03;   /* 2π·46 */
+  transition:stroke-dashoffset .5s cubic-bezier(.22,.61,.36,1),stroke .3s ease}
+/* live 弧：token 流入时 JS 加 .live 扫一圈、1.4s 后摘掉。动画绑事件，不常驻。 */
+#ball .ring-live{fill:none;stroke:var(--primary);stroke-width:3;stroke-linecap:round;
+  stroke-dasharray:48 241;opacity:0;transform-origin:50px 50px}
+#ball.live .ring-live{opacity:1;animation:ring-spin 1.2s linear 1}
+#ball.live .ring-fill{opacity:.3}
+@keyframes ring-spin{to{transform:rotate(360deg)}}
+/* 状态（#ball[data-state] 由 JS paintBall 算）：
+   nobudget/empty 没有真实分母 → 整环隐藏，退化成纯数字球；
+   offline 保留最后已知值、环变灰（显示 0 会让人以为用量归零）；
+   warn/over 按分母的 60%/100% 转琥珀/红。 */
+#ball[data-state="nobudget"] .ring,#ball[data-state="empty"] .ring{opacity:0;transition:opacity .25s}
+#ball[data-state="offline"] .ring-fill{stroke:var(--placeholder);opacity:.45}
+#ball[data-state="offline"] .ball-num b{color:var(--secondary)}
+#ball[data-state="warn"] .ring-fill{stroke:var(--orange)}
+#ball[data-state="over"] .ring-fill{stroke:var(--red)}
+#ball[data-state="over"] .ball-num b{color:var(--red)}
+#ball[data-state="empty"] .ball-num b{color:var(--placeholder);font-weight:600}
+@media (prefers-reduced-motion:reduce){
+  #ball.live .ring-live{animation:none;opacity:.6}
+}
+/* 数字整块正中，z-index 压着环。 */
 #ball .ball-num{display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:2}
-/* 数字纯白 + glow-text；24/116 这档 88px 球上约 18px，「9999.9万」这种 7 字串约 76px、球内宽 84px 放得下。
+/* 数字纯白不发光（旧版 glow-text 叠在深色球上发糊，环已经足够表达状态）；
+   24/116 这档 88px 球上约 18px，k/M/B 口径最长「999.9M」6 字符约 65px、球内宽 84px 放得下。
    transform 过渡是给悬停放大用的（见下面 hover 那条） */
 #ball .ball-num b{color:#fff;font-size:calc(var(--bs) * 24 / 116);font-weight:800;letter-spacing:.2px;font-variant-numeric:tabular-nums;
-  text-shadow:0 0 10px rgba(255,255,255,.5);transition:transform .2s ease}   /* demo 的 glow-text */
+  transition:transform .2s ease}
 /* 悬停时数字再放大一档（球本体那条 1.08 之外叠加），移开收回 —— 增量角标挂在 b 里，跟着一起缩 */
 html.float.ball #ball:hover .ball-num b{transform:scale(1.15)}
 /* ⚠️ 副标题规则必须点名 #ball-sub，不能用 .ball-num span —— 大数字本体也是 span（#ball-num 在 b 里），
@@ -185,7 +207,8 @@ html.float.morph-in #wrap{transform-origin:calc(100% - 44px) calc(100% - 44px);
    旧窗口的最后一帧钉在新窗口**左上角**重放 —— 不先把球藏起来，用户就会看到球在左上闪一下
    （2026-09-28 实测）。opacity 挂在 #wrap 上连同两个辉光伪元素一起藏。 */
 html.float.morph-pre #wrap{opacity:0}
-/* 水球整套（液面/波浪/水色档/满球气泡）2026-09-24 移除：换成 gemini-code demo 的暗黑发光球。
+/* 退役史：水球整套（液面/波浪/水色档/满球气泡）2026-09-24 移除，换暗黑发光球；
+   发光球的渐变装饰环 + 呼吸辉光 2026-10-20 移除，换信息环（见球模式那段）。
    卡通（表情脸/托球小手/☺开关）更早一轮（2026-09-23）已删。 */
 
 *{box-sizing:border-box;margin:0;padding:0}
@@ -321,7 +344,12 @@ html.float .model{flex:none;max-width:50%;color:#d4d4d8;background:rgba(255,255,
 </div>
 <div id="feed"><div id="empty">等待数据…</div></div>
 <div class="grip" id="grip" title="拖动调整大小；Ctrl+滚轮缩放内容"></div>
-<div id="ball">
+<div id="ball" data-state="nobudget">
+  <svg class="ring" viewBox="0 0 100 100" aria-hidden="true">
+    <circle class="ring-track" cx="50" cy="50" r="46"></circle>
+    <circle class="ring-fill" id="ringFill" cx="50" cy="50" r="46"></circle>
+    <circle class="ring-live" cx="50" cy="50" r="46"></circle>
+  </svg>
   <div class="ball-num"><b id="ball-total"><span id="ball-num">—</span></b><span id="ball-sub">—</span></div>
   <button class="ball-btn bopen" id="bopen" title="打开完整面板">↗</button>
   <button class="ball-btn bclose" id="bclose" title="关闭">✕</button>
@@ -337,11 +365,26 @@ if (FLOAT) document.documentElement.classList.add('float');
 const $ = id => document.getElementById(id);
 const feed = $('feed');
 
-// ---- 数字格式化：亿/万 分档，四位以内原样（桌面小卡片，tabular-nums 防抖） ----
+// ---- 数字格式化：k/M/B/T 分档，四位以内原样（桌面小卡片，tabular-nums 防抖） ----
+// 2026-10-20 从 万/亿 换成 k/M/B/T：与 token-ball-demo 同一口径 —— 单位全站只有这一套，
+// 不在球上混用「万 / k / 千」。小数位只在「加上单位不顶到圆边」时保留
+// （88px 球实测：85.3M 放得下，6 字符的 853.2M 已抵满 —— ≥100 就不带小数）。
+// 进位溢出要提级：999,999,999 直接写会被舍成「1000M」，应该是「1B」；T 是末档，再往上封顶 999T+。
 function fmt(n) {
-  n = n || 0;
-  if (n >= 1e8) return (n / 1e8).toFixed(2) + '亿';
-  if (n >= 1e4) return (n / 1e4).toFixed(1) + '万';
+  if (n == null || !isFinite(n)) return '—';
+  n = Math.round(n);
+  if (n < 1000) return String(n);
+  const UNITS = [[1e12, 'T'], [1e9, 'B'], [1e6, 'M'], [1e3, 'k']];
+  const scr = x => (x < 100 ? x.toFixed(1).replace(/\.0$/, '') : String(Math.round(x)));
+  for (let i = 0; i < UNITS.length; i++) {
+    const v = UNITS[i][0], s = UNITS[i][1];
+    if (n < v) continue;
+    if (parseFloat(scr(n / v)) >= 1000) {
+      if (i > 0) { const up = UNITS[i - 1]; return scr(n / up[0]) + up[1]; }
+      return '999T+';
+    }
+    return scr(n / v) + s;
+  }
   return String(n);
 }
 const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -482,23 +525,62 @@ function tweenNum(el, to) {
 }
 async function fetchStats() {
   try {
-    const [t, a] = await Promise.all([
+    const [t, a, d] = await Promise.all([
       fetch('/api/models?range=today').then(r => r.json()),
       fetch('/api/models').then(r => r.json()),
+      fetch('/api/daily?range=7d').then(r => r.json()),   // 球的进度环分母候补：昨日总量
     ]);
     paintStats(t.ok && t.totals, a.ok && a.totals);
+    if (d.ok === false || !d.days) { /* 接口异常就沿用上一轮的昨日值 */ }
+    else if (d.days.length >= 2) yesterdayTotal = d.days[d.days.length - 2].total || 0;   // days 升序、末日=今天
     if (t.ok && t.totals) {
-      tweenNum($('ball-num'), t.totals.total);
-      $('ball-total').title = '今日实际 ' + fmtExact(t.totals.total) + ' tokens';
+      lastToday = t.totals;
+      // 今日 0 条：球面显示 —（不画环、不显示 0 —— 显示 0 会让人以为用量归零过）
+      if (t.totals.count) tweenNum($('ball-num'), t.totals.total);
+      else { cancelAnimationFrame($('ball-num')._raf); $('ball-num')._v = 0; $('ball-num').textContent = '—'; }
       $('ball-sub').textContent = t.totals.count + ' 条';
-      // 今天 token 涨了 → 大数和球各浮一个「+xxx」；跨天清零（负数）不打扰
+      // 今天 token 涨了 → 大数和球各浮一个「+xxx」，球环上扫一段 live 弧；跨天清零（负数）不打扰
       if (lastTotal != null && t.totals.total > lastTotal) {
         popDelta($('today-total'), t.totals.total - lastTotal);
         popDelta($('ball-total'), t.totals.total - lastTotal);
+        flashLive();
       }
       lastTotal = t.totals.total;
     }
+    paintBall();
   } catch { /* 服务短暂不可用时下轮事件会再拉 */ }
+}
+
+/* ---- 球的信息环：分母优先「每日预算」设置项（localStorage agentlog.ballBudget，单位 token），
+   没设退到昨日总量；两者皆无 = 没有真实分母 → 不画环（装饰不能伪装成信息）。
+   112px 的球窗塞不下悬浮面板，悬停明细（L1）走整球的原生 title。 ---- */
+const RING_C = 2 * Math.PI * 46;   // 环周长，viewBox r=46
+let connOk = false;                // SSE 连接状态；首帧按断连画（灰环），onopen 后转正
+let lastToday = null;              // 最近一次 today totals（paintBall 重算状态时要用）
+let yesterdayTotal = 0;
+function paintBall() {
+  const ball = $('ball');
+  const t = lastToday || { total: 0, count: 0, tin: 0, tout: 0, tcache: 0 };
+  const budget = +localStorage.getItem('agentlog.ballBudget') || 0;
+  const denom = budget || yesterdayTotal;
+  let st;
+  if (!connOk) st = 'offline';
+  else if (!t.count) st = 'empty';
+  else if (!denom) st = 'nobudget';
+  else { const p = t.total / denom; st = p >= 1 ? 'over' : p >= 0.6 ? 'warn' : 'normal'; }
+  ball.dataset.state = st;
+  $('ringFill').style.strokeDashoffset = RING_C * (1 - (denom ? Math.min(1, t.total / denom) : 0));
+  // 没有 L1：112px 球窗画不出 styled 悬浮面板（浮层会被窗口边切掉），原生 title 的白底系统框
+  // 在深色球上丑得发昏（2026-10-20 用户原话），悬停放大壳窗又会把 morph 盖住的缩放闪帧全暴露出来。
+  // 拆分口径点就一球：长回卡片，入/出/缓存就在最上面。
+}
+/* live 弧：扫一圈即停。连续流入时先摘再加重播动画。 */
+function flashLive() {
+  const ball = $('ball');
+  ball.classList.remove('live'); void ball.offsetWidth;
+  ball.classList.add('live');
+  clearTimeout(flashLive.t);
+  flashLive.t = setTimeout(() => ball.classList.remove('live'), 1400);
 }
 let statsTimer = 0;
 function scheduleStats() { clearTimeout(statsTimer); statsTimer = setTimeout(fetchStats, 600); } // 一批更新合并成一次拉取
@@ -516,8 +598,8 @@ async function fetchFeed() {
 const dot = $('dot');
 function connect() {
   const es = new EventSource('/api/events');
-  es.onopen = () => { dot.className = 'dot on'; dot.title = '实时连接中 · 点击收成小球'; $('ball').classList.remove('off'); };
-  es.onerror = () => { dot.className = 'dot off'; dot.title = '连接断开，重试中…'; $('ball').classList.add('off'); };
+  es.onopen = () => { dot.className = 'dot on'; dot.title = '实时连接中 · 点击收成小球'; connOk = true; paintBall(); };
+  es.onerror = () => { dot.className = 'dot off'; dot.title = '连接断开，重试中…'; connOk = false; paintBall(); };
   es.onmessage = ev => {
     let m; try { m = JSON.parse(ev.data); } catch { return; }
     if (m.type === 'hello') {
