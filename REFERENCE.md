@@ -362,6 +362,19 @@ GET  /api/selftest         上一次回归自检的结果（R32，见下面「�
                            tail,reds[],note}], skipped[{file,title,group,why}], summary{total,pass,fail,timeout,error}）
                            并添三个服务端算的标注：file（结果文件绝对路径）、ageMs（at 读不出时退到文件修改时间）、
                            sameBuild / sameParserRev（结果出自哪版代码 vs 当前服务是哪版；不一致页面顶栏黄条）
+POST /api/probe             {path} 探测任意目录/文件是什么格式（「添加 agent」弹层里那个「探测」按钮）。
+                            只读：不登记、不改配置，认出后由页面把建议名与根填回表单，添加仍走 POST /api/agents。
+                            三分支：
+                            · 认出 {ok,path,isFile,recognized:true,selfRecognized,kind,sessions,traces,
+                              matchedAt,matchDepth,note,root,ownedBy,suggestedName,children:[],scanned,truncated}
+                              selfRecognized=false = 结构在**祖先**那层（matchDepth<0），note 已写清是第几层；
+                              ownedBy 非空 = 该根（或它里面）已被某个已有 agent 在扫，页面只提示、不给「填入」
+                            · 本层没认、子目录认了 {recognized:false, children:[{path,rel,kind,sessions,traces,
+                              depth,suggestedName,ownedBy}], hint}
+                            · 全没认 {recognized:false, hint, tried:["<路径> —— <原因>"], scanned, truncated}
+                            探查范围：本层 → 往上最多 4 层（遇 Temp / AppData 这类系统目录即停，免得认到别人的树）
+                            → 往下 2 层（≤40 次 sniff、2.5s 预算，超了 truncated:true）。
+                            空路径 / UNC 路径 / 路径不存在返 400（{ok:false,error}），与「认不出」区分开
 POST /api/agents           {name, path?} 添加
                            ⚠️ 路径解析出的根若与**任一已有 agent 的根重叠**（相等 / 在其内 / 包住它），
                            返回 400 与 `{ok:false, ownedBy:"<那个 agent>", kind, sessions, error}` ——

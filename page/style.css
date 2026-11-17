@@ -127,6 +127,14 @@ body{background:var(--bg);color:var(--regular);font:14px/1.6 "PingFang SC",Arial
 /* 一行里既有路径（无空格的超长串）又有中文原因：break-all 会把中文也逐字断开、读起来发毛，
    改成 overflow-wrap:anywhere —— 中文按正常规则换行，只有当长路径真的溢出时才在任意位置断。 */
 .tried-p{font-family:Consolas,Menlo,monospace;color:var(--placeholder);overflow-wrap:anywhere}
+/* 添加 agent 弹层的「探测」入口：输入框与按钮一行，结果区贴着它往下排（三个月后回来改的人先看到这段） */
+.path-row{display:flex;gap:8px;align-items:center}
+.probe{margin-top:10px;font-size:12.5px;line-height:1.6;color:var(--secondary)}
+.probe-line{margin-bottom:2px}
+.probe-warn{color:var(--red)}
+.probe-kid{display:flex;gap:8px;align-items:baseline;margin-top:4px}
+.probe-kid .tried-p{flex:1}
+.probe-kid .el-button{flex:none}
 .side-foot{padding:10px 12px 4px;border-top:1px solid var(--border-light);margin-top:10px}
 
 /* ===== 页头 ===== */

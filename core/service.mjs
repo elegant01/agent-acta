@@ -1386,6 +1386,167 @@ function dupRootError(name, conf) {
   };
 }
 
+// ---------------- 探测任意目录（/api/probe） ----------------
+//
+// 为什么要有它：addAgent 那条路要求「先知道名字」，可真正卡人的场景是「我知道东西大概在哪，但不知道
+// 这是哪一家的格式」。dsh-skills-manager 那种是资产清单发现 —— 目录存在即可 Add source、扫出 32 个根、
+// 面板上多一行只读条目，误判的代价是一行噪音；我们是数据格式发现 —— 认不出来就是 0 条，而且不会自愈
+// （见 mimocode 被 opencode 抢走那次：kind 每轮翻转、条目整批删了加）。所以这个入口的定位**不是替人拍板
+// 接入**，而是把 sniffBase 的看法和理由当场摆出来，由人决定要不要按建议的名字加。
+//
+// 三层探查，依次是：
+//   ① 给的那一层本身（可能已经是一个会话根，也可能是个 db 文件）
+//   ② 往上最多 8 层（填的是 <root>/sessions/<会话 id> 这种深层目录时，结构往往在祖先那几层）
+//   ③ 往下扫两层子目录（填的是应用的**上层**，如 ~/.claude 而结构在 projects/）—— 对标它的 Scan subfolders
+function allRootsOf(c) { return [...new Set([...rootsOf(c), c.traces].filter(Boolean))]; }
+
+// 谁的根覆盖了这个路径（**包含关系**，与 rootOverlap 同判据）：探测要说清「这个目录已经被谁扫了」，
+// 否则用户照着建议再 Add 一遍，只会被 dupRootError 再拦一次、白折腾一轮。
+function rootOwnerOf(p) {
+  const norm = x => (x ? (process.platform === 'win32' ? path.resolve(x).toLowerCase() : path.resolve(x)) : '');
+  const a = norm(p);
+  if (!a) return null;
+  const inside = (x, y) => x === y || x.startsWith(y + path.sep);
+  for (const [n, c] of agentConfs) {
+    for (const rp of allRootsOf(c)) {
+      const b = norm(rp);
+      if (!b) continue;
+      if (inside(a, b) || inside(b, a)) return { name: n, root: rp, kind: c.kind || null, exact: a === b };
+    }
+  }
+  return null;
+}
+
+const PROBE_UP = 4;           // 往上找几层就停（再往上会走到 Temp / AppData 这类系统目录，那儿「认出来」的
+                              // 是别人的东西，不是用户这个目录的祖先，报出来只会误导）
+// 上探的**停靠线**：这些名字之上没有「某个应用的日志根」可言，越过它们继续嗅就变成猜谜
+// （实测不加这条时，AppData\Local 会因为底下有个 sessions/ 被认成 atomcode，把「没认出来」错报成「已认出」）。
+const PROBE_STOP_UP = /^(temp|tmp|appdata|local|roaming|localappdata|program files|program files \(x86\)|windows|users|home|library|application support|documents|desktop|downloads)$/i;
+const PROBE_CHILD_MAX = 40;   // 往下扫的 sniff 次数上限（每层 sniff 含 sqlite 探测，不设上限会扫穿整个 %APPDATA%）
+const PROBE_MS = 2500;        // 往下扫的时间预算：页面在等，宁可少扫几个也不能让请求挂住
+// 名字一眼就是噪音、且必然不含会话根的目录。只跳这些，`data` / `agents` / `store` 这类别跳（goose / openclaw 的根就在它们底下）。
+const PROBE_SKIP_CHILD = /^(node_modules|\.git|cache|Cache|logs|Logs|telemetry|tmp)$/;
+
+// 认出来之后给它配一个**能直接用于 addAgent 的名字**：kind 通常就是 agent 名（claude / codex / cursor…），
+// 少数 kind 带连字符或大写（codeartsdb / buddyext / atomcode），净化成合法名；重名就往后挂序号，
+// 免得用户点了「添加」又被「已存在同名 agent」弹回来。
+function probeNameFor(kind) {
+  const base = String(kind || '').toLowerCase().replace(/[^\w-]+/g, '-').replace(/^-+|-+$/g, '') || 'agent';
+  const name = (/^[\w]/.test(base) ? base : 'a-' + base).slice(0, 32);
+  if (!agentConfs.has(name)) return name;
+  for (let i = 2; i < 10; i++) { const n = (name + '-' + i).slice(0, 32); if (!agentConfs.has(n)) return n; }
+  return name;
+}
+
+function probeDir(rawPath) {
+  const raw = String(rawPath || '').trim();
+  if (!raw) return { ok: false, error: '请填写要探测的目录（或某个日志文件）' };
+  if (raw.startsWith('\\\\') || raw.startsWith('//')) return { ok: false, error: '不支持网络盘 / UNC 路径' };
+  const abs = path.resolve(raw);
+  const asFile = isFile(abs);
+  if (!asFile && !isDir(abs)) {
+    return {
+      ok: false, path: abs, exists: false,
+      error: '这个路径不存在（' + abs + '）—— 探测前先确认它在**这台机器**上；' +
+        '如果你是在另一台机器的路径上看到的，请换成本机的路径再试',
+    };
+  }
+  const t0 = Date.now();
+  const tried = [];
+  const sniffAt = (p, depth) => {
+    let conf = null;
+    try { conf = sniffBase(p); } catch { conf = null; }
+    if (!conf) tried.push(p + ' —— ' + sniffWhyNot(p, null));
+    return conf ? { conf, at: p, depth } : null;
+  };
+
+  // ① 本层
+  let hit = sniffAt(abs, 0);
+
+  // ② 往上（只对目录做：文件型根已经在 ① 认过了）
+  if (!hit && !asFile) {
+    const root = path.parse(abs).root;
+    let cur = abs;
+    for (let i = 1; i <= PROBE_UP; i++) {
+      if (cur === root || path.dirname(cur) === cur) break;
+      cur = path.dirname(cur);
+      if (PROBE_STOP_UP.test(path.basename(cur) || '')) break;   // 越过 Temp / AppData 就不是「同一个应用的树」了
+      hit = sniffAt(cur, -i);
+      if (hit) break;
+    }
+  }
+
+  // ③ 往下扫两层（广度优先、认出来就不再往里钻：再深一层通常只是会话 id，认得也没用）
+  const children = [];
+  let sniffs = 0, truncated = false;
+  const scanDown = (dir, depth) => {
+    if (depth <= 0 || hit) return;
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch { return; }
+    for (const n of names) {
+      if (sniffs >= PROBE_CHILD_MAX || Date.now() - t0 > PROBE_MS) { truncated = true; return; }
+      const p = path.join(dir, n);
+      if (!isDir(p) || PROBE_SKIP_CHILD.test(n)) continue;
+      sniffs++;
+      let conf = null;
+      try { conf = sniffBase(p); } catch { conf = null; }
+      if (conf) {
+        children.push({
+          path: p, rel: path.relative(abs, p) || '.', kind: conf.kind,
+          sessions: conf.sessions || null, traces: conf.traces || null, depth,
+          // 页面「填这个」直接拿它填名称，省得前端再复制一份 kind→名称 的规则
+          suggestedName: probeNameFor(conf.kind),
+          ownedBy: rootOwnerOf(conf.sessions),
+        });
+        continue;
+      }
+      scanDown(p, depth - 1);
+    }
+  };
+  if (!hit && !asFile) scanDown(abs, 2);
+
+  if (hit) {
+    const owner = rootOwnerOf(hit.at);
+    const up = hit.depth !== 0;
+    const note = hit.depth === 0
+      ? '这一层就是 ' + hit.conf.kind + ' 的日志根'
+      : '你填的是它' + (hit.depth < 0 ? '上面的' : '下面的') + '第 ' + Math.abs(hit.depth) + ' 层，结构认在 ' + hit.at;
+    return {
+      ok: true, path: abs, exists: true, isFile: asFile, recognized: true,
+      selfRecognized: hit.depth === 0,   // 「你填的这层」自己是不是根（false = 结构在祖先那层）
+      kind: hit.conf.kind, sessions: hit.conf.sessions || null, traces: hit.conf.traces || null,
+      matchedAt: hit.at, matchDepth: hit.depth, note,
+      root: hit.conf.sessions || hit.conf.traces || null,
+      ownedBy: owner, suggestedName: probeNameFor(hit.conf.kind),
+      children: [], scanned: sniffs, truncated,
+    };
+  }
+
+  // 没认出本层，但子目录里有能认的 —— 这就是「给的是上层目录」的典型（~/.claude、%APPDATA% 某个应用根）
+  if (children.length) {
+    const c0 = children[0];
+    return {
+      ok: true, path: abs, exists: true, isFile: asFile, recognized: false, selfRecognized: false,
+      note: '这一层本身不是任何一家的日志根，但底下 ' + children.length + ' 个子目录认出来了',
+      kind: c0.kind, sessions: c0.sessions, traces: c0.traces,
+      matchedAt: c0.path, matchDepth: c0.depth, root: c0.sessions || c0.traces || null,
+      ownedBy: c0.ownedBy, suggestedName: probeNameFor(c0.kind),
+      children, scanned: sniffs, truncated,
+      hint: isFile ? null : dirHint(abs),
+    };
+  }
+
+  // 彻底没认出来：把顶层长什么样、每层试探的结论都摆出来（「目录不存在」已在上面单独return了）
+  return {
+    ok: true, path: abs, exists: true, isFile: asFile, recognized: false, selfRecognized: false,
+    note: asFile
+      ? '给的是一个文件，但它的内容不是我们认识的任何日志格式'
+      : '这个目录（以及往上 ' + PROBE_UP + ' 层、往下 2 层）都没认出已知结构',
+    hint: asFile ? null : dirHint(abs),
+    children: [], tried, scanned: sniffs, truncated,
+  };
+}
+
 function addAgent(rawName, manualPath) {
   const name = String(rawName || '').trim().toLowerCase();
   if (!/^[\w][\w-]{0,31}$/.test(name)) return { ok: false, error: '名称需为 1-32 位字母/数字/下划线/中划线' };
@@ -3714,6 +3875,7 @@ const ROUTES = [
   { path: '/api/search', method: 'GET', methods: null, miss: '404', fn: routeSearch },
   { path: '/api/selftest', method: 'GET', methods: null, miss: '404', fn: routeSelftest },
   { path: '/api/agents', method: 'GET', methods: null, miss: '404', fn: routeAgents },
+  { path: '/api/probe', method: 'POST', methods: ['POST'], miss: '404', fn: routeProbe },
   { path: '/api/agents/toggle', method: 'POST', methods: ['POST'], miss: '404', fn: routeAgentsToggle },
   { path: '/api/trae/capture-key', method: 'GET/POST', methods: null, miss: '404', fn: routeTraeCaptureKey },
   { path: '/api/trae/clear-key', method: 'POST', methods: ['POST'], miss: '404', fn: routeTraeClearKey },
@@ -3901,6 +4063,22 @@ function routeSelftest(req, res, u) {
 }
 // 表里这条的 methods 是 null（不断方法）：GET/POST/DELETE 三种语义都在函数体里，
 // 兜底 405 也在体里（原先就是「进分支之后」才判的，搬进表反而会改掉 405 响应头的形状）。
+// 探测任意目录：只读接口（不改配置、不触发扫描），页面「添加 agent」里的「探测」按钮走它。
+// 为什么是 POST 而不是 GET 查询串：路径里带空格、中文、反斜杠，查询串要两重转义，POST 一条 JSON 最省事。
+function routeProbe(req, res) {
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    if (badOrigin(req)) { res.statusCode = 403; res.end('{"ok":false,"error":"forbidden origin"}'); return; }
+    readBody(req, body => {
+      let out;
+      try {
+        const j = JSON.parse(body || '{}');
+        out = probeDir(j.path);
+      } catch (e) { out = { ok: false, error: e.message }; }
+      res.statusCode = out.ok ? 200 : 400;
+      res.end(JSON.stringify(out));
+    });
+    return;
+}
 function routeAgents(req, res, u) {
     if (req.method === 'GET') {
       whenReady(() => {

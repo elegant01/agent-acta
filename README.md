@@ -157,6 +157,9 @@ CLI 中途退出时插件**自己接手**：下一条请求现判探测到 14570
 - **磁盘占用**（侧栏第 6 项）：按 agent 列「日志目录 / 归档 / 索引片」各占多少、谁最大，清理前先看清构成（`~/.agent-acta` 顶层逐项列出，含 widget 那份 Electron 运行时）。**只统计、不删除**；遍历带预算，走不完会明标「统计到一半」而不是给个看似完整的假数
 - **解析器自检**（侧栏同名一项）：改完解析口径，上一次回归跑成什么样 —— `test/` 下每个脚本各自的结果（绿 / 红 / 超时）、耗时、以及**这次没跑的以及为什么不跑**，一页看全。数据来自 `~/.agent-acta/selftest.json`（由 `node test/selftest.mjs` 写），这一页**只读、不在浏览器里跑测试**；结果出自另一版代码时顶部会黄条警告「这份绿不代表当前这版」
 - 侧栏每个 agent 旁的开关 = 临时禁用（不删配置）；`✕` = 移除该 agent 配置（不动本地日志文件）；`+` = 手动添加
+  —— **不知道路径长什么样就先点弹层里的「探测」**：给它任一目录（或某个 `.jsonl` / `.messages.json` 文件），
+  认得出就回「是哪家、日志根在哪、建议叫什么」，认不出会列出顶层长什么样、每层试过的原因、以及底下哪几个子目录认出来了；
+  探测只读，不会登记任何东西
 - **cursor 行那个图标按钮 = 注入 / 卸载 token 采集钩子**：cursor 的转录文件里没有 token，本地唯一的逐轮用量
   来自它自己的 `stop` 钩子。点一下（二次确认）就往 `~/.cursor/hooks.json` 加一条命令，之后每轮的
   input/output/缓存用量会被采到 `~/.agent-acta/cursor-usage.jsonl` 并贴回卡片上；再点一下卸载。
@@ -193,6 +196,7 @@ CLI 中途退出时插件**自己接手**：下一条请求现判探测到 14570
 | `GET /api/ping` | 存活探测 |
 | `GET /api/version` | `{version, build, pid}`，build = 服务脚本内容指纹 |
 | `GET /api/agents` · `POST /api/agents` · `DELETE /api/agents?name=` · `POST /api/agents/toggle` | agent 配置的增删改查 |
+| `POST /api/probe` | 探测任意目录/文件是什么格式（「添加 agent」弹层的「探测」按钮）：只读，认出就回 `kind` + 日志根 + 建议名，认不出回 `hint` + 每层原因；「添加」仍走 `POST /api/agents` |
 | `GET /api/diagnose` | 环境诊断：每个候选 agent 每条候选路径的探测结果与未识别原因 |
 | `GET /api/usage?force=1` | 磁盘占用：按 agent 的日志/归档大小 + 索引片 + `~/.agent-acta` 顶层构成（结果缓存 60s，`force=1` 绕开） |
 | `GET /api/selftest` | 上一次回归自检的结果（原样递出 `~/.agent-acta/selftest.json` + `ageMs` / `sameBuild` / `sameParserRev` 三个诚实标注）。**不跑测试**，没跑过时 `ok:false` 并附 `hint` |
